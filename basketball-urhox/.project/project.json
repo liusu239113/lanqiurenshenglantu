@@ -1,0 +1,23 @@
+{
+  "$schema": "../schemas/project.schema.json",
+  "project_id": "m_efw3",
+  "author": {
+    "id": "293533708"
+  },
+  "entry": "main.lua",
+  "version": "1.0.0",
+  "taptap_publish": {
+    "title": "",
+    "description": "",
+    "category": "",
+    "screen_orientation": "portrait",
+    "collection_type": "casual",
+    "trial_note": "",
+    "app_platforms": "1,2"
+  },
+  "assets": {
+    "icon": "",
+    "screenshots": [],
+    "promotional_image": ""
+  }
+}
