@@ -7,8 +7,11 @@ local UI = require("urhox-libs/UI")
 local Config = require("Core.Config")
 local Career = require("Core.Career")
 local Match = require("Core.Match")
+local MatchText = require("Core.MatchText")
 local EventSystem = require("Core.EventSystem")
 local Audio = require("Core.Audio")
+local Ads = require("Core.Ads")
+local Injury = require("Core.Injury")
 
 local MiniGame = require("Core.MiniGame")
 
@@ -20,6 +23,8 @@ local ScreenMatch = require("UI.ScreenMatch")
 local ScreenEvent = require("UI.ScreenEvent")
 local ScreenTraining = require("UI.ScreenTraining")
 local ScreenMini = require("UI.ScreenMini")
+local ScreenMatchText = require("UI.ScreenMatchText")
+local AdWidgets = require("UI.AdWidgets")
 local Common = require("UI.Common")
 
 local C = Config.COLORS
@@ -40,6 +45,8 @@ local weekPlayed_ = false
 
 -- 是否正在比赛直播中（用于 tick 分发）
 local inMatch_ = false
+-- 是否正在文字直播中（用于 tick 分发）
+local inTextMatch_ = false
 -- 是否正在玩操作玩法（用于 tick 分发）
 local inMini_ = false
 -- 训练场返回目标："hub" 或 "menu"
@@ -72,6 +79,8 @@ local runWeek
 local afterMatchFlow
 ---@type fun()|nil
 local finishWeek
+---@type fun(state: CareerState)|nil
+local onMatchFinished
 
 -- ============================================================================
 -- 场景与事件
@@ -103,9 +112,14 @@ function HandleUpdate(eventType, eventData)
     if inMatch_ then
         ScreenMatch.tick(dt)
     end
+    if inTextMatch_ then
+        ScreenMatchText.tick(dt)
+    end
     if inMini_ then
         ScreenMini.tick(dt)
     end
+    -- 广告看门狗（超时保护）
+    Ads.tick(dt)
 end
 
 -- ============================================================================
@@ -247,7 +261,15 @@ showHub = function()
             trainingReturn_ = "hub"
             showTraining()
         end,
-        actionResultText_
+        actionResultText_,
+        function()  -- 切换比赛模式
+            state.matchMode = (state.matchMode == "text") and "live" or "text"
+            Career.save()
+            UI.Toast.Show(
+                state.matchMode == "text" and "已切换到文字直播模式" or "已切换到操作比赛模式",
+                { duration = 2, variant = "info", position = "bottom" })
+            showHub()
+        end
     )
     UI.SetRoot(root)
 end
@@ -795,32 +817,69 @@ runWeek = function()
 
     -- 1) 若本周有比赛 → 先打比赛
     if Career.hasGameThisWeek() then
+        -- 伤病期间无法出战
+        if Injury.isInjured(state) then
+            UI.Toast.Show(
+                string.format("伤病中（%s），本周无法出战", Injury.statusText(state)),
+                { duration = 3, variant = "warning", position = "bottom" })
+            Career.addLog(string.format("因%s缺席本周比赛。", state.injuryName or "伤病"))
+            afterMatchFlow()
+            return
+        end
+
         local stage = Career.getStage()
-        Match.start(state, stage)
-        inMatch_ = true
 
-        local matchRoot = ScreenMatch.Build(state, function()
-            inMatch_ = false
-            local result = state.lastResult
-
-            -- 赛后事件
-            local ev = EventSystem.afterMatch(state, result or {})
-            if ev then
-                showEventCard(ev, function()
-                    Career.save()
-                    afterMatchFlow()
-                end)
-            else
-                Career.save()
-                afterMatchFlow()
-            end
-        end)
-        UI.SetRoot(matchRoot)
+        -- 比赛模式分流：操作模式 / 文字直播模式
+        if state.matchMode == "text" then
+            MatchText.start(state, stage)
+            inTextMatch_ = true
+            local root = ScreenMatchText.Build(state, function()
+                inTextMatch_ = false
+                onMatchFinished(state)
+            end)
+            UI.SetRoot(root)
+        else
+            Match.start(state, stage)
+            inMatch_ = true
+            local root = ScreenMatch.Build(state, function()
+                inMatch_ = false
+                onMatchFinished(state)
+            end)
+            UI.SetRoot(root)
+        end
         return
     end
 
     -- 无比赛 → 日常事件
     afterMatchFlow()
+end
+
+--- 比赛结束后的统一处理：伤病判定 → 赛后事件
+---@param state CareerState
+onMatchFinished = function(state)
+    local result = state.lastResult
+
+    -- 伤病判定（操作模式全力出战，风险略高）
+    local inj = Injury.roll(state, state.matchMode == "live")
+    if inj then
+        Injury.apply(state, inj)
+        UI.Toast.Show(
+            string.format("受伤！%s，预计伤停 %d 天", inj.name, inj.days),
+            { duration = 3.5, variant = "error", position = "bottom" })
+        Career.addLog(string.format("比赛中%s，伤停 %d 天。", inj.name, inj.days))
+    end
+
+    -- 赛后事件
+    local ev = EventSystem.afterMatch(state, result or {})
+    if ev then
+        showEventCard(ev, function()
+            Career.save()
+            afterMatchFlow()
+        end)
+    else
+        Career.save()
+        afterMatchFlow()
+    end
 end
 
 --- 比赛之后：日常事件 → 推进

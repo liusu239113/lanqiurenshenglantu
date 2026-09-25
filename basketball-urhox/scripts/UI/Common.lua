@@ -396,6 +396,79 @@ function Common.Tag(text, color)
     }
 end
 
+--- 统一顶栏：返回键固定在左上角 + 标题居中 + 右侧可选内容
+--- 所有二级界面都应使用此函数，保证返回键位置一致
+---@param title string
+---@param onBack fun()|nil 传 nil 则不显示返回键
+---@param rightWidget Panel|Label|nil 右侧附加内容
+---@return Panel
+function Common.TopBar(title, onBack, rightWidget)
+    ---@type table[]
+    local children = {}
+
+    -- 左：返回键（固定左上角）
+    if onBack then
+        table.insert(children, UI.Button {
+            text = "◀ 返回",
+            width = 78,
+            height = 38,
+            fontSize = 13,
+            fontWeight = "bold",
+            backgroundColor = C.bgCard,
+            textColor = C.textMain,
+            hoverBackgroundColor = C.bgCardLight,
+            pressedBackgroundColor = { 236, 226, 208, 255 },
+            borderWidth = 3,
+            borderColor = C.outline,
+            flexShrink = 0,
+            onClick = function()
+                onBack()
+            end,
+        })
+    else
+        table.insert(children, UI.Panel { width = 78, flexShrink = 0 })
+    end
+
+    -- 中：标题（占满剩余空间，居中）
+    table.insert(children, UI.Panel {
+        flexGrow = 1,
+        flexBasis = 0,
+        justifyContent = "center",
+        alignItems = "center",
+        children = {
+            UI.Label {
+                text = title,
+                fontSize = 19,
+                fontWeight = "bold",
+                fontColor = C.textMain,
+                letterSpacing = 2,
+                textAlign = "center",
+                whiteSpace = "normal",
+            },
+        },
+    })
+
+    -- 右：可选内容
+    if rightWidget then
+        table.insert(children, rightWidget)
+    else
+        table.insert(children, UI.Panel { width = 78, flexShrink = 0 })
+    end
+
+    return UI.Panel {
+        width = "100%",
+        height = 60,
+        flexDirection = "row",
+        alignItems = "center",
+        gap = 8,
+        paddingHorizontal = 14,
+        backgroundColor = C.bgPanel,
+        borderBottomWidth = 3,
+        borderBottomColor = C.outline,
+        children = children,
+    }
+end
+
 --- 键值行
 ---@param key string
 ---@param value string

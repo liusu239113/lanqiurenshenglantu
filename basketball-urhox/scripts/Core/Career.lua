@@ -43,6 +43,18 @@ local Career = {}
 ---@field retired boolean
 ---@field tacticId string|nil   训练馆布置的进攻战术
 ---@field defenseId string|nil  训练馆布置的防守策略
+--- 扩展系统字段
+---@field injuryDays number       剩余伤停天数
+---@field injuryName string|nil   伤病名称
+---@field injuryRisk number       伤病风险 0-100
+---@field expPool number          经验池（可兑换属性点）
+---@field skillPoints number      技能点
+---@field potential table<string, number> 各项能力上限（默认 99）
+---@field talents string[]        已获得的天赋
+---@field endorsements table[]    代言合约 { name, pay, seasons }
+---@field adUsage table          广告配额记录
+---@field matchMode string       "live"（操作比赛）| "text"（文字直播）
+---@field boostActive boolean    训练经验加成是否生效
 
 ---@type CareerState|nil
 Career.state = nil
@@ -171,7 +183,27 @@ function Career.createPlayer(name, positionId, hometown)
         seenEvents = {},
         catCooldown = {},
         retired = false,
+        -- 扩展系统
+        injuryDays = 0,
+        injuryName = nil,
+        injuryRisk = 30,
+        expPool = 0,
+        skillPoints = 0,
+        potential = {},
+        talents = {},
+        endorsements = {},
+        adUsage = { day = "", heal = 0 },
+        matchMode = "live",
+        boostActive = false,
+        tacticId = nil,
+        defenseId = nil,
     }
+
+    -- 初始潜力上限：各项 99（广告可突破）
+    for i = 1, #Config.ATTRS do
+        local def = Config.ATTRS[i]
+        state.potential[def.key] = Config.ATTR_MAX
+    end
 
     Career.state = state
     Career.addLog(string.format("生涯起步：%s，%s，司职%s。", state.name, hometown, posDef.name))
@@ -254,16 +286,138 @@ end
 -- 属性变更（统一入口，便于记录）
 -- ============================================================================
 
---- 直接增减属性
+--- 取某项能力的上限（默认 ATTR_MAX，广告可突破）
+---@param key string
+---@return number
+function Career.getPotential(key)
+    local s = Career.state
+    if not s or not s.potential then return Config.ATTR_MAX end
+    return s.potential[key] or Config.ATTR_MAX
+end
+
+--- 直接增减属性（受潜力上限约束）
 ---@param key string
 ---@param delta number
 ---@return number 实际变化量
 function Career.addAttr(key, delta)
     local s = Career.state
     if not s then return 0 end
+    local cap = Career.getPotential(key)
     local before = s.attrs[key] or 0
-    s.attrs[key] = clamp(before + delta, 1, Config.ATTR_MAX)
+    s.attrs[key] = clamp(before + delta, 1, cap)
     return s.attrs[key] - before
+end
+
+--- 提升某项能力的潜力上限（广告「潜力突破」奖励）
+---@param key string
+---@param step number
+---@return number 新的上限
+function Career.addPotential(key, step)
+    local s = Career.state
+    if not s then return Config.ATTR_MAX end
+    if not s.potential then s.potential = {} end
+    local cur = s.potential[key] or Config.ATTR_MAX
+    local next_ = cur + step
+    if next_ > Config.ATTR_MAX + 20 then next_ = Config.ATTR_MAX + 20 end
+    s.potential[key] = next_
+    return next_
+end
+
+--- 增加经验池
+---@param amount number
+function Career.addExp(amount)
+    local s = Career.state
+    if not s then return end
+    s.expPool = (s.expPool or 0) + amount
+end
+
+--- 用经验池兑换属性点（1 点 = 100 经验）
+---@param key string
+---@return boolean, string
+function Career.spendExpForAttr(key)
+    local s = Career.state
+    if not s then return false, "无生涯数据" end
+    local COST = 100
+    if (s.expPool or 0) < COST then
+        return false, string.format("经验不足（需 %d，现有 %d）", COST, s.expPool or 0)
+    end
+    local cap = Career.getPotential(key)
+    if (s.attrs[key] or 0) >= cap then
+        return false, "该项已达潜力上限，需先突破潜力"
+    end
+    s.expPool = s.expPool - COST
+    local real = Career.addAttr(key, 1)
+    if real <= 0 then
+        s.expPool = s.expPool + COST   -- 未生效则退还
+        return false, "该项已达上限"
+    end
+    return true, "属性 +1"
+end
+
+--- 增加技能点
+---@param amount number
+function Career.addSkillPoints(amount)
+    local s = Career.state
+    if not s then return end
+    s.skillPoints = (s.skillPoints or 0) + amount
+end
+
+--- 添加天赋
+---@param name string
+---@return boolean 是否新增成功
+function Career.addTalent(name)
+    local s = Career.state
+    if not s then return false end
+    if not s.talents then s.talents = {} end
+    for i = 1, #s.talents do
+        if s.talents[i] == name then return false end
+    end
+    table.insert(s.talents, name)
+    return true
+end
+
+--- 添加代言合约
+---@param name string
+---@param pay number 每赛季收入（万元）
+---@param seasons number 合约年数
+function Career.addEndorsement(name, pay, seasons)
+    local s = Career.state
+    if not s then return end
+    if not s.endorsements then s.endorsements = {} end
+    table.insert(s.endorsements, { name = name, pay = pay, seasons = seasons })
+end
+
+--- 代言每赛季总收入
+---@return number
+function Career.endorsementIncome()
+    local s = Career.state
+    if not s or not s.endorsements then return 0 end
+    local total = 0
+    for i = 1, #s.endorsements do
+        total = total + (s.endorsements[i].pay or 0)
+    end
+    return total
+end
+
+--- 代言合约推进一赛季（年数 -1，到期移除）
+---@return string[] 到期提示
+function Career.advanceEndorsements()
+    local s = Career.state
+    if not s or not s.endorsements then return {} end
+    ---@type string[]
+    local out = {}
+    local kept = {}
+    for i = 1, #s.endorsements do
+        local e = s.endorsements[i]
+        e.seasons = (e.seasons or 1) - 1
+        if e.seasons > 0 then
+            table.insert(kept, e)
+        else
+            table.insert(out, string.format("代言合约「%s」到期。", e.name))
+        end
+    end
+    s.endorsements = kept
+    return out
 end
 
 --- 增减体能
@@ -319,6 +473,17 @@ function Career.applyAction(actionId)
     local parts = {}
     local mul = growthMul(s.age)
 
+    -- 训练经验加成（广告「训练经验 ×1.5」）
+    if s.boostActive then
+        mul = mul * 1.5
+    end
+
+    -- 伤病期间训练效果减半
+    if (s.injuryDays or 0) > 0 then
+        mul = mul * 0.5
+        table.insert(parts, "（伤病中，训练效果减半）")
+    end
+
     -- 属性收益（受年龄成长系数影响）
     for i = 1, #Config.ATTRS do
         local def = Config.ATTRS[i]
@@ -358,6 +523,12 @@ function Career.applyAction(actionId)
         table.insert(parts, string.format("收入 +%d万", income))
     end
 
+    -- 所有训练都累积经验池
+    if actionId ~= "rest" and actionId ~= "media" then
+        Career.addExp(18)
+        table.insert(parts, "经验 +18")
+    end
+
     -- 低士气拖慢成长
     if s.morale < 30 then
         table.insert(parts, "（士气低落，状态不佳）")
@@ -392,6 +563,14 @@ function Career.advanceWeek()
 
     ---@type string[]
     local events = {}
+
+    -- 伤病恢复推进
+    local Injury = require("Core.Injury")
+    local healed = Injury.advanceWeek(s)
+    if healed then
+        table.insert(events, healed)
+        Career.addLog(healed)
+    end
 
     -- 赛季推进
     s.week = s.week + 1
@@ -480,6 +659,24 @@ function Career.endSeason()
     s.salary = baseSalary
     Career.addMoney(s.salary)
     table.insert(out, string.format("续约：年薪 %d 万。", s.salary))
+
+    -- 代言收入
+    local endorseIncome = Career.endorsementIncome()
+    if endorseIncome > 0 then
+        Career.addMoney(endorseIncome)
+        table.insert(out, string.format("代言收入 %d 万。", endorseIncome))
+    end
+
+    -- 代言合约到期推进
+    local expired = Career.advanceEndorsements()
+    for i = 1, #expired do
+        table.insert(out, expired[i])
+    end
+
+    -- 训练经验加成到期（按赛季失效）
+    if s.boostActive then
+        s.boostActive = false
+    end
 
     -- 士气浮动
     if ppg >= 15 then

@@ -7,8 +7,10 @@ local UI = require("urhox-libs/UI")
 local Config = require("Core.Config")
 local Career = require("Core.Career")
 local MiniGame = require("Core.MiniGame")
+local Injury = require("Core.Injury")
 local Audio = require("Core.Audio")
 local Common = require("UI.Common")
+local AdWidgets = require("UI.AdWidgets")
 
 local ScreenHub = {}
 
@@ -160,14 +162,16 @@ end
 ---@param onAdvance fun()
 ---@param onTraining fun()
 ---@param actionText string
+---@param onToggleMode fun()|nil 切换比赛模式
 ---@return Panel
-function ScreenHub.Build(state, onAction, onAdvance, onTraining, actionText)
+function ScreenHub.Build(state, onAction, onAdvance, onTraining, actionText, onToggleMode)
     Audio.PlayBgm("daily")
 
     local stage = Career.getStage()
     local ov = Career.getOverall()
     local posName = Career.getPositionName()
     local ppg = Career.getPPG()
+    local injured = (state.injuryDays or 0) > 0
 
     -- ---- 顶栏：球员牌 ----
     local topBar = UI.Panel {
@@ -275,6 +279,35 @@ function ScreenHub.Build(state, onAction, onAdvance, onTraining, actionText)
                     Common.StatBar("士气", state.morale, C.primary),
                 },
             },
+
+            -- 伤病徽章 + 常驻痊愈按钮（顶栏常驻，与参考设计一致）
+            injured and UI.Panel {
+                width = "100%",
+                flexDirection = "row",
+                alignItems = "center",
+                gap = 8,
+                padding = 8,
+                backgroundColor = { 255, 232, 228, 255 },
+                borderWidth = 2,
+                borderColor = C.danger,
+                children = {
+                    UI.Label {
+                        text = string.format("伤病 %d 天", state.injuryDays),
+                        fontSize = 12,
+                        fontWeight = "bold",
+                        fontColor = C.danger,
+                        flexShrink = 0,
+                    },
+                    UI.Label {
+                        text = state.injuryName or "",
+                        fontSize = 11,
+                        fontColor = C.textSub,
+                        flexGrow = 1,
+                        flexBasis = 0,
+                        whiteSpace = "normal",
+                    },
+                },
+            } or UI.Panel { height = 0 },
         },
     }
 
@@ -410,6 +443,47 @@ function ScreenHub.Build(state, onAction, onAdvance, onTraining, actionText)
         Common.KV("年薪", string.format("%d 万", state.salary)),
     }, { barColor = C.textMain }))
 
+    -- 免费福利（广告位聚合面板）
+    table.insert(blocks, AdWidgets.WelfarePanel(state, {
+        heal = function()
+            return Injury.healAll(state)
+        end,
+        attrPoints = function()
+            Career.addExp(500)
+            return "经验池 +500（可兑换 5 点属性）"
+        end,
+        sp = function()
+            Career.addSkillPoints(3)
+            return "技能点 +3"
+        end,
+        adBreak = function()
+            -- 突破当前最高属性项的潜力上限
+            local bestKey, bestVal = nil, -1
+            for i = 1, #Config.ATTRS do
+                local def = Config.ATTRS[i]
+                local v = state.attrs[def.key] or 0
+                if v > bestVal then bestKey, bestVal = def.key, v end
+            end
+            if bestKey then
+                Career.addPotential(bestKey, 5)
+                return "潜力上限 +5，可以继续成长了"
+            end
+            return "潜力已提升"
+        end,
+        endorse = function()
+            local pay = math.floor(20 + state.fame / 12)
+            local names = { "运动饮料", "球鞋品牌", "腕表", "汽车", "手机" }
+            local name = names[math.random(1, #names)]
+            Career.addEndorsement(name, pay, 2)
+            return string.format("签下「%s」代言，每赛季 %d 万", name, pay)
+        end,
+        lottery = function()
+            local prize = 300
+            Career.addMoney(prize)
+            return string.format("恭喜中头奖！奖金 +%d 万", prize)
+        end,
+    }))
+
     -- 大事记
     if #state.log > 0 then
         ---@type table[]
@@ -469,22 +543,43 @@ function ScreenHub.Build(state, onAction, onAdvance, onTraining, actionText)
         })
     end
 
-    -- 训练馆入口（独立玩法）
-    table.insert(bottomChildren, UI.Button {
-        text = "🏀 训 练 馆 · 玩 法",
+    -- 训练馆入口 + 比赛模式切换
+    table.insert(bottomChildren, UI.Panel {
         width = "100%",
-        height = 46,
-        fontSize = 14,
-        fontWeight = "bold",
-        backgroundColor = { 168, 62, 148, 255 },
-        textColor = { 255, 255, 255, 255 },
-        borderWidth = 3,
-        borderColor = C.outline,
-        letterSpacing = 1,
-        onClick = function()
-            Audio.Play("click")
-            onTraining()
-        end,
+        flexDirection = "row",
+        gap = 10,
+        children = {
+            UI.Button {
+                text = "🏀 训 练 馆",
+                flexGrow = 1, flexBasis = 0,
+                height = 46,
+                fontSize = 14,
+                fontWeight = "bold",
+                backgroundColor = { 168, 62, 148, 255 },
+                textColor = { 255, 255, 255, 255 },
+                borderWidth = 3,
+                borderColor = C.outline,
+                onClick = function()
+                    Audio.Play("click")
+                    onTraining()
+                end,
+            },
+            UI.Button {
+                text = state.matchMode == "text" and "📺 文字直播" or "🎮 操作比赛",
+                flexGrow = 1, flexBasis = 0,
+                height = 46,
+                fontSize = 14,
+                fontWeight = "bold",
+                backgroundColor = C.textMain,
+                textColor = { 255, 255, 255, 255 },
+                borderWidth = 3,
+                borderColor = C.outline,
+                onClick = function()
+                    Audio.Play("click")
+                    if onToggleMode then onToggleMode() end
+                end,
+            },
+        },
     })
 
     table.insert(bottomChildren, UI.Panel {

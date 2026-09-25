@@ -199,38 +199,11 @@ function ScreenCreate.Build(onDone, onBack)
     }
 
     local root = Common.Screen(Config.ART.bgLocker, {
-        -- 顶栏
-        UI.Panel {
-            height = 62,
-            flexDirection = "row",
-            alignItems = "center",
-            justifyContent = "space-between",
-            paddingHorizontal = 18,
-            children = {
-                UI.Label {
-                    text = "创 建 球 员",
-                    fontSize = 19,
-                    fontWeight = "bold",
-                    fontColor = C.textMain,
-                    letterSpacing = 2,
-                },
-                UI.Button {
-                    text = "返回",
-                    width = 74,
-                    height = 38,
-                    fontSize = 13,
-                    backgroundColor = C.bgCard,
-                    textColor = C.textSub,
-                    borderRadius = 999,
-                    borderWidth = 2,
-                    borderColor = C.outlineSoft,
-                    onClick = function()
-                        Audio.Play("click")
-                        onBack()
-                    end,
-                },
-            },
-        },
+        -- 顶栏（返回键在左上角）
+        Common.TopBar("创 建 球 员", function()
+            Audio.Play("click")
+            onBack()
+        end),
 
         -- 滚动内容
         UI.ScrollView {

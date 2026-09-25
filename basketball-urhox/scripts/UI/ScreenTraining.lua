@@ -9,6 +9,7 @@ local Career = require("Core.Career")
 local MiniGame = require("Core.MiniGame")
 local Audio = require("Core.Audio")
 local Common = require("UI.Common")
+local AdWidgets = require("UI.AdWidgets")
 
 local ScreenTraining = {}
 
@@ -104,31 +105,11 @@ function ScreenTraining.Build(onPick, onBack)
     end
 
     return Common.Screen(Config.ART.bgTraining, {
-        -- 顶栏
-        UI.Panel {
-            height = 60,
-            flexDirection = "row",
-            alignItems = "center",
-            justifyContent = "space-between",
-            paddingHorizontal = 16,
-            children = {
-                Common.Title("训 练 馆", 20),
-                UI.Button {
-                    text = "返回",
-                    width = 72,
-                    height = 38,
-                    fontSize = 14,
-                    backgroundColor = C.bgCard,
-                    textColor = C.textMain,
-                    borderWidth = 3,
-                    borderColor = C.outline,
-                    onClick = function()
-                        Audio.Play("click")
-                        onBack()
-                    end,
-                },
-            },
-        },
+        -- 顶栏（返回键在左上角）
+        Common.TopBar("训 练 馆", function()
+            Audio.Play("click")
+            onBack()
+        end),
 
         UI.ScrollView {
             flexGrow = 1,
@@ -164,6 +145,28 @@ function ScreenTraining.Build(onPick, onBack)
                         ModeCard("战 术 板", "布置攻防打法，影响比赛走势", { 62, 138, 96, 255 }, function()
                             Audio.Play("click")
                             onPick("tactic")
+                        end),
+
+                        -- 训练经验加成（广告位）
+                        state.boostActive and UI.Panel {
+                            width = "100%",
+                            padding = 12,
+                            backgroundColor = { 232, 246, 232, 255 },
+                            borderWidth = 3,
+                            borderColor = C.outline,
+                            children = {
+                                UI.Label {
+                                    text = "✓ 训练经验 ×1.5 生效中（本季有效）",
+                                    fontSize = 13,
+                                    fontWeight = "bold",
+                                    fontColor = C.success,
+                                    textAlign = "center",
+                                    whiteSpace = "normal",
+                                },
+                            },
+                        } or AdWidgets.Card(state, "boost", function()
+                            state.boostActive = true
+                            return "训练经验 ×1.5 已生效，本季训练收益大幅提升"
                         end),
 
                         -- 属性面板
@@ -324,30 +327,10 @@ function ScreenTraining.BuildTactic(onConfirm, onBack)
     refreshDefense()
 
     return Common.Screen(Config.ART.bgLocker, {
-        UI.Panel {
-            height = 60,
-            flexDirection = "row",
-            alignItems = "center",
-            justifyContent = "space-between",
-            paddingHorizontal = 16,
-            children = {
-                Common.Title("战 术 板", 20),
-                UI.Button {
-                    text = "返回",
-                    width = 72,
-                    height = 38,
-                    fontSize = 14,
-                    backgroundColor = C.bgCard,
-                    textColor = C.textMain,
-                    borderWidth = 3,
-                    borderColor = C.outline,
-                    onClick = function()
-                        Audio.Play("click")
-                        onBack()
-                    end,
-                },
-            },
-        },
+        Common.TopBar("战 术 板", function()
+            Audio.Play("click")
+            onBack()
+        end),
 
         UI.ScrollView {
             flexGrow = 1,

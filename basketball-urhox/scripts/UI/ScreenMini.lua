@@ -111,7 +111,7 @@ function ScreenMini.BuildShot(attrs, stamina, shots, difficulty, onFinish)
         fontColor = C.textSub,
         textAlign = "center",
         whiteSpace = "normal",
-        height = 26,
+        minHeight = 26,
     }
 
     local scoreLabel = UI.Label {
@@ -337,6 +337,7 @@ end
 ---@param onFinish fun(success: number, total: number)
 ---@return Panel
 function ScreenMini.BuildDribble(attrs, rounds, difficulty, onFinish)
+    -- 注意：用 minHeight 而非 height，多行文字（含换行）会撑开高度，避免裁切
     local leanLabel = UI.Label {
         text = "",
         fontSize = 18,
@@ -345,7 +346,7 @@ function ScreenMini.BuildDribble(attrs, rounds, difficulty, onFinish)
         textAlign = "center",
         whiteSpace = "normal",
         lineHeight = 1.6,
-        height = 64,
+        minHeight = 64,
     }
 
     local roundLabel = UI.Label {
@@ -529,6 +530,7 @@ local defendUI_ = nil
 ---@param onFinish fun(success: number, total: number)
 ---@return Panel
 function ScreenMini.BuildDefend(defendAttr, rounds, difficulty, onFinish)
+    -- 注意：用 minHeight 而非 height，避免多行提示被裁切
     local tellLabel = UI.Label {
         text = "",
         fontSize = 18,
@@ -537,7 +539,7 @@ function ScreenMini.BuildDefend(defendAttr, rounds, difficulty, onFinish)
         textAlign = "center",
         whiteSpace = "normal",
         lineHeight = 1.6,
-        height = 64,
+        minHeight = 64,
     }
 
     local roundLabel = UI.Label {
@@ -553,7 +555,8 @@ function ScreenMini.BuildDefend(defendAttr, rounds, difficulty, onFinish)
         fontWeight = "bold",
         fontColor = C.textSub,
         textAlign = "center",
-        height = 24,
+        whiteSpace = "normal",
+        minHeight = 24,
     }
 
     ---@type DefendUI
