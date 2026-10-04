@@ -3,7 +3,7 @@
 --
 --   第 1 步 球员档案：姓名 / 场上位置 / 出身地
 --   第 2 步 星途出身：4 选 1；「天选之星」需要看一段短片解锁（弹窗式，玩家主动点）
---   第 3 步 天赋卡  ：球探报告抽 6 张选 3 张；免费刷新 3 次
+--   第 3 步 天赋卡  ：初始报告抽 6 张选 3 张；重拟需主动看广告
 --                     也可以看广告「重拟报告（保底 2 张传奇）」或「全部带走」
 --
 -- 广告点位说明：第 2、3 步各自独立成屏，不选完上一步就看不到下一步的广告，
@@ -13,10 +13,10 @@
 local UI = require("urhox-libs/UI")
 local Config = require("Core.Config")
 local Career = require("Core.Career")
-local Ads = require("Core.Ads")
 local Teams = require("Data.Teams")
 local Audio = require("Core.Audio")
 local Common = require("UI.Common")
+local Anim = require("UI.Anim")
 local AdWidgets = require("UI.AdWidgets")
 
 local ScreenCreate = {}
@@ -33,12 +33,15 @@ local C = Config.COLORS
 ---@field posIndex number
 ---@field townIndex number
 ---@field originId string
----@field chosenUnlocked boolean    「天选之星」是否已解锁
+---@field chosenConfirmed boolean   本次建角观看广告后已解锁天选之星
+---@field adRerolls number          本次建角已观看重拟报告广告次数
+---@field adAll boolean             本次建角已观看全部带走广告
+---@field allCards boolean          本次报告可带走全部卡牌
 ---@field cards TalentDef[]         当前抽到的 6 张卡
 ---@field picked table<string, boolean> 已选中的卡 id
----@field freeReroll number         剩余免费刷新次数
----@field allTaken boolean          「全部带走」是否已使用
 ---@field modal string|nil          当前弹窗："chosen" | nil
+---@field animIndex number|nil      翻牌动画的错峰序号（<0 = 不播放）
+---@field playAnim boolean|nil       本次渲染是否播放翻牌动画
 
 ---@type CreateDraft|nil
 local draft_ = nil
@@ -84,11 +87,12 @@ local function newDraft()
         posIndex = 2,
         townIndex = 1,
         originId = firstOrigin().id,
-        chosenUnlocked = false,
+        chosenConfirmed = false,
+        adRerolls = 0,
+        adAll = false,
+        allCards = false,
         cards = {},
         picked = {},
-        freeReroll = Config.TALENT.freeReroll,
-        allTaken = false,
         modal = nil,
     }
 end
@@ -114,9 +118,8 @@ local function rollRarity()
 end
 
 --- 抽 Config.TALENT.drawCount 张不重复的天赋卡
----@param legendGuarantee number 保底传奇张数（0 = 纯随机）
 ---@return TalentDef[]
-local function drawCards(legendGuarantee)
+local function drawCards(guaranteedLegends)
     ---@type TalentDef[]
     local result = {}
     ---@type table<string, boolean>
@@ -141,16 +144,14 @@ local function drawCards(legendGuarantee)
         return pick
     end
 
-    -- 保底传奇
-    local guard = 0
-    while #result < legendGuarantee and guard < 20 do
-        guard = guard + 1
-        local t = take("legend")
-        if t then table.insert(result, t) end
+    local guarantees = guaranteedLegends or 0
+    for i = 1, guarantees do
+        local legend = take("legend")
+        if legend then table.insert(result, legend) end
     end
 
-    -- 其余按权重抽，权重抽空则全池兜底
-    guard = 0
+    -- 按权重抽，权重抽空则全池兜底
+    local guard = 0
     while #result < Config.TALENT.drawCount and guard < 100 do
         guard = guard + 1
         local t = take(rollRarity()) or take(nil)
@@ -160,13 +161,13 @@ local function drawCards(legendGuarantee)
     return result
 end
 
---- 重抽一套卡（清空已选，保留「全部带走」状态由调用方决定）
+--- 重抽一套卡（清空已选）
 ---@param draft CreateDraft
----@param legendGuarantee number
-local function reroll(draft, legendGuarantee)
-    draft.cards = drawCards(legendGuarantee)
+local function reroll(draft, guaranteedLegends)
+    draft.cards = drawCards(guaranteedLegends)
     draft.picked = {}
-    draft.allTaken = false
+    draft.allCards = false
+    draft.playAnim = true   -- 新一套卡 → 重播翻牌动画
 end
 
 --- 已选张数
@@ -181,14 +182,11 @@ local function pickedCount(draft)
     return n
 end
 
---- 本轮可以带走的张数（用了「全部带走」就是整副卡）
+--- 本轮可以带走的张数
 ---@param draft CreateDraft
 ---@return number
 local function targetCount(draft)
-    if draft.allTaken then
-        return #draft.cards
-    end
-    return Config.TALENT.pickCount
+    return draft.allCards and #draft.cards or Config.TALENT.pickCount
 end
 
 -- ---------------------------------------------------------------------------
@@ -494,7 +492,7 @@ end
 ---@return Button
 local function OriginCard(draft, def, onLockedCard, onPick)
     local selected = (def.id == draft.originId)
-    local locked = def.adLocked and not draft.chosenUnlocked
+    local needsConfirm = def.id == "chosen" and not draft.chosenConfirmed
 
     --- 加成文案
     ---@type string[]
@@ -506,6 +504,7 @@ local function OriginCard(draft, def, onLockedCard, onPick)
         if def.init.money then table.insert(lines, string.format("存款 %+d 万", def.init.money)) end
         if def.init.morale then table.insert(lines, string.format("士气 %+d", def.init.morale)) end
     end
+    -- 独特机制（perk）单独成行展示，不与数值加成挤在同一行
 
     ---@type table[]
     local titleRow = {
@@ -520,8 +519,8 @@ local function OriginCard(draft, def, onLockedCard, onPick)
     if selected then
         table.insert(titleRow, Common.Tag("已选", C.primaryDark))
     end
-    if locked then
-        table.insert(titleRow, Common.Tag("需解锁", { 232, 168, 32, 255 }))
+    if needsConfirm then
+        table.insert(titleRow, Common.Tag("看广告解锁", { 232, 168, 32, 255 }))
     end
 
     ---@type table[]
@@ -559,34 +558,46 @@ local function OriginCard(draft, def, onLockedCard, onPick)
                     fontColor = selected and { 255, 255, 255, 255 } or C.success,
                     whiteSpace = "normal",
                 },
+                -- 独特机制单独一行，用区别于数值的颜色强调「这是玩法差异，不只是数字」
+                def.perk and UI.Label {
+                    text = "◆ " .. def.perk.name .. "：" .. def.perk.desc,
+                    fontSize = 12,
+                    fontWeight = "bold",
+                    fontColor = selected and { 255, 240, 180, 255 } or { 196, 120, 16, 255 },
+                    whiteSpace = "normal",
+                } or UI.Panel { width = 0, height = 0 },
             },
         },
     }
-    if locked then
+    if needsConfirm then
         table.insert(children, UI.Label {
-            text = "▶ 点这里看一段短片解锁",
+            text = "▶ 点这里查看代价",
             fontSize = 11,
             fontWeight = "bold",
             fontColor = { 232, 168, 32, 255 },
         })
     end
 
-    -- 注意：Button 不显式给 height 时会被默认成 44，内容会溢出压到下一张卡上，
-    -- 所以这里按内容量给出确定高度（锁定卡多一行提示，留更高）
+    -- 高度按内容量计算（Button 的 minHeight 不生效，必须给确定 height）：
+    -- perk 行 +22，锁定卡的解锁提示行 +22
+    local cardHeight = 150
+    if def.perk then cardHeight = cardHeight + 22 end
+    if needsConfirm then cardHeight = cardHeight + 22 end
+
     return UI.Button {
         width = "100%",
-        height = locked and 172 or 150,
+        height = cardHeight,
         paddingHorizontal = 14,
         paddingVertical = 12,
-        backgroundColor = selected and C.primary or (locked and { 238, 232, 220, 255 } or C.bgCard),
+        backgroundColor = selected and C.primary or C.bgCard,
         hoverBackgroundColor = selected and C.primary or C.bgCardLight,
         pressedBackgroundColor = selected and C.primaryDark or C.bgCardLight,
         borderWidth = 3,
-        borderColor = locked and C.outlineSoft or C.outline,
+        borderColor = C.outline,
         disabled = selected,
         onClick = function()
             Audio.Play("click")
-            if locked then
+            if needsConfirm then
                 onLockedCard()
                 return
             end
@@ -650,14 +661,14 @@ local function TalentCardButton(draft, card, onToggle)
     local rightChildren = {}
     if taken then
         table.insert(rightChildren, UI.Label {
-            text = "✓ 已选",
+            text = "√ 已选",
             fontSize = 13,
             fontWeight = "bold",
             fontColor = { 255, 255, 255, 255 },
         })
     end
 
-    return UI.Button {
+    local btn = UI.Button {
         width = "100%",
         height = 76,
         paddingHorizontal = 12,
@@ -725,6 +736,43 @@ local function TalentCardButton(draft, card, onToggle)
             },
         },
     }
+
+    -- 翻牌入场：卡片由小放大弹出（高稀有度带一次光效脉冲）
+    -- animIndex < 0 表示本次不播放（点选/取消导致的列表重建）
+    local idx = draft.animIndex or -1
+    if idx < 0 then
+        return btn
+    end
+
+    -- 用 SetProp 设置 scale（直接赋值 scale 会与 Node.scale 的 Vector2 类型冲突）
+    btn:SetProp("scale", 0.8)
+    btn:SetOpacity(0)
+    local isRare = (card.rarity == "legend")
+    local delay = 0.07 * idx
+
+    Anim.Delay(delay, function()
+        Anim.Float(0.8, 1.0, 0.28, Anim.Ease.outBack, function(v)
+            btn:SetProp("scale", v)
+            btn:SetOpacity(math.min(1, (v - 0.8) * 5))
+        end, function()
+            btn:SetProp("scale", 1.0)
+            btn:SetOpacity(1)
+            -- 高稀有度：弹出后一次强调脉冲
+            if isRare then
+                Anim.Float(1.0, 1.07, 0.15, Anim.Ease.outQuad, function(v)
+                    btn:SetProp("scale", v)
+                end, function()
+                    Anim.Float(1.07, 1.0, 0.18, Anim.Ease.outQuad, function(v)
+                        btn:SetProp("scale", v)
+                    end, function()
+                        btn:SetProp("scale", 1.0)
+                    end)
+                end)
+            end
+        end)
+    end)
+
+    return btn
 end
 
 -- ---------------------------------------------------------------------------
@@ -736,10 +784,10 @@ end
 ---@param onBack fun()
 ---@return Panel
 function ScreenCreate.Build(onDone, onBack)
-    Audio.PlayBgm("daily")
+    Audio.PlayBgm("create")
 
     draft_ = newDraft()
-    reroll(draft_, 0)
+    reroll(draft_)
 
     ---@type fun(): Panel
     local render
@@ -753,27 +801,18 @@ function ScreenCreate.Build(onDone, onBack)
         render()
     end
 
-    --- 看短片解锁「天选之星」
+    --- 选用「天选之星」出身：只在激励广告完整观看的回调里调用。
     local function unlockChosen()
         local draft = draft_
         if not draft then return end
         local origin = lastOrigin()
-        Ads.show(
-            function()
-                draft.chosenUnlocked = true
-                draft.originId = origin.id
-                draft.modal = nil
-                Audio.Play("levelup")
-                UI.Toast.Show(string.format("已解锁并选用出身【%s】", origin.name),
-                    { duration = 2.5, variant = "success", position = "bottom" })
-                render()
-            end,
-            function(msg)
-                draft.modal = nil
-                UI.Toast.Show(msg, { duration = 2.5, variant = "warning", position = "bottom" })
-                render()
-            end
-        )
+        draft.chosenConfirmed = true
+        draft.originId = origin.id
+        draft.modal = nil
+        Audio.Play("levelup")
+        UI.Toast.Show(string.format("已选用出身【%s】", origin.name),
+            { duration = 2.5, variant = "success", position = "top" })
+        render()
     end
 
     --- 渲染整个界面
@@ -783,6 +822,10 @@ function ScreenCreate.Build(onDone, onBack)
             return UI.Panel { width = "100%", height = "100%" }
         end
 
+        -- 选中天选之星必须先通过广告回调解锁。
+        if draft.originId == "chosen" and not draft.chosenConfirmed then
+            draft.originId = firstOrigin().id
+        end
         local isLast = (draft.step == 3)
 
         -- ---- 底部主按钮（先建，便于第 3 步就地刷新状态）----
@@ -860,6 +903,8 @@ function ScreenCreate.Build(onDone, onBack)
                 list:ClearChildren()
                 for i = 1, #draft.cards do
                     local card = draft.cards[i]
+                    -- 错峰翻牌序号；仅在重新抽卡时播放，点选/取消重建时不重播
+                    draft.animIndex = draft.playAnim and (i - 1) or -1
                     list:AddChild(TalentCardButton(draft, card, function()
                         Audio.Play("click")
                         if draft.picked[card.id] then
@@ -868,7 +913,7 @@ function ScreenCreate.Build(onDone, onBack)
                             if pickedCount(draft) >= targetCount(draft) then
                                 UI.Toast.Show(
                                     string.format("最多只能带走 %d 张，先取消一张", targetCount(draft)),
-                                    { duration = 2, variant = "warning", position = "bottom" })
+                                    { duration = 2, variant = "warning", position = "top" })
                                 return
                             end
                             draft.picked[card.id] = true
@@ -882,57 +927,26 @@ function ScreenCreate.Build(onDone, onBack)
 
             footerSync = refreshFooter
 
-            -- 抽卡相关的三个入口：免费刷新 / 看广告重拟 / 看广告全带走
+            -- 球探报告通过广告重拟，普通三选一仍可直接开始生涯。
             ---@type table[]
-            local controls = {
-                UI.Button {
-                    text = string.format("刷新（剩 %d 次）", draft.freeReroll),
-                    width = "100%",
-                    height = 46,
-                    fontSize = 14,
-                    fontWeight = "bold",
-                    backgroundColor = C.bgCard,
-                    textColor = C.textMain,
-                    hoverBackgroundColor = C.bgCardLight,
-                    pressedBackgroundColor = { 236, 226, 208, 255 },
-                    borderWidth = 3,
-                    borderColor = C.outline,
-                    disabled = draft.freeReroll <= 0,
-                    onClick = function()
-                        Audio.Play("click")
-                        if draft.freeReroll <= 0 then return end
-                        draft.freeReroll = draft.freeReroll - 1
-                        reroll(draft, 0)
-                        render()
-                    end,
-                },
-            }
-
-            -- 这两个点位无次数限制，不需要生涯数据，直接传 nil
-            table.insert(controls, AdWidgets.Button(nil, "talentReroll", function()
-                reroll(draft, Config.TALENT.legendGuarantee)
-                return "球探重拟了报告"
-            end, {
-                label = string.format("▶ 看广告刷新 · 保底 %d 张传奇", Config.TALENT.legendGuarantee),
-                onFinished = function()
-                    render()
-                end,
-            }))
-
-            if not draft.allTaken then
+            local controls = {}
+            if draft.adRerolls < Config.AD_REWARDS.talentRerollSeason and not draft.adAll then
+                table.insert(controls, AdWidgets.Button(nil, "talentReroll", function()
+                    draft.adRerolls = draft.adRerolls + 1
+                    reroll(draft, Config.TALENT.adLegendCount)
+                    return "球探重拟完成：6 张卡保底 2 张传奇"
+                end, { label = string.format("▶ 看广告 · 重拟报告（保底 2 张传奇，剩 %d 次）",
+                    Config.AD_REWARDS.talentRerollSeason - draft.adRerolls), onFinished = render }))
+            end
+            if not draft.adAll then
                 table.insert(controls, AdWidgets.Button(nil, "talentAll", function()
-                    draft.allTaken = true
-                    draft.picked = {}
+                    draft.adAll = true
+                    draft.allCards = true
                     for i = 1, #draft.cards do
                         draft.picked[draft.cards[i].id] = true
                     end
-                    return "六张天赋全部带走"
-                end, {
-                    label = "▶ 看广告 · 全部带走（六选三 → 六选六）",
-                    onFinished = function()
-                        render()
-                    end,
-                }))
+                    return "本轮 6 张天赋卡已全部带走"
+                end, { label = "▶ 看广告 · 本轮 6 张天赋卡全部带走", onFinished = render }))
             end
 
             blocks = {
@@ -1010,7 +1024,7 @@ function ScreenCreate.Build(onDone, onBack)
                                 padding = 18,
                                 children = {
                                     UI.Label {
-                                        text = origin.unlockText or "观看一段短片即可解锁。",
+                                        text = "这个出身的收益很高，代价也很实在。看清楚再决定。",
                                         fontSize = 13,
                                         fontColor = C.textMain,
                                         whiteSpace = "normal",
@@ -1026,9 +1040,10 @@ function ScreenCreate.Build(onDone, onBack)
                                         fontColor = C.success,
                                         whiteSpace = "normal",
                                     },
-                                    AdWidgets.OptionButton("看 广 告 解 锁", function()
+                                    AdWidgets.Button(nil, "chosen", function()
                                         unlockChosen()
-                                    end),
+                                        return "天选之星已解锁并选用"
+                                    end, { label = "▶ 看广告 · 解锁天选之星（人气 +300，士气 -15）", onFinished = render }),
                                     Common.OutlineButton("再 想 想", function()
                                         Audio.Play("click")
                                         draft.modal = nil
@@ -1042,7 +1057,7 @@ function ScreenCreate.Build(onDone, onBack)
             })
         end
 
-        local root = Common.Screen(Config.ART.bgLocker, {
+        local root = Common.Screen(Config.ART.bgOffice, {
             Common.TopBar("创 建 球 员", function()
                 Audio.Play("click")
                 if draft.step > 1 then

@@ -9,9 +9,14 @@ local Career = require("Core.Career")
 local Match = require("Core.Match")
 local MatchText = require("Core.MatchText")
 local EventSystem = require("Core.EventSystem")
+local LifeStory = require("Data.LifeStory")
+local SideStory = require("Data.SideStory")
 local Audio = require("Core.Audio")
 local Ads = require("Core.Ads")
 local Injury = require("Core.Injury")
+local Rival = require("Core.Rival")
+local Teammates = require("Core.Teammates")
+local AllStar = require("Core.AllStar")
 
 local MiniGame = require("Core.MiniGame")
 
@@ -29,6 +34,12 @@ local ScreenTransfer = require("UI.ScreenTransfer")
 local ScreenFinance = require("UI.ScreenFinance")
 local ScreenReport = require("UI.ScreenReport")
 local ScreenWelfare = require("UI.ScreenWelfare")
+local ScreenBadge = require("UI.ScreenBadge")
+local ScreenSettings = require("UI.ScreenSettings")
+local ScreenRival = require("UI.ScreenRival")
+local ScreenRoster = require("UI.ScreenRoster")
+local ScreenAllStar = require("UI.ScreenAllStar")
+local Anim = require("UI.Anim")
 local AdWidgets = require("UI.AdWidgets")
 local Common = require("UI.Common")
 
@@ -45,10 +56,12 @@ local scene_ = nil
 local selectedAction_ = ""
 -- 本周行动结果描述
 local actionResultText_ = ""
+-- 本周行动是否已结算（幂等键：防止同一周反复执行行动刷属性）
+local actionDoneThisWeek_ = false
 -- 本周是否已比赛
 local weekPlayed_ = false
--- 本周训练加倍是否已激活（广告「私人教练加练」）
-local actionDouble_ = false
+-- 本周是否已开过「全神贯注」（广告：接下来几次训练必定满档）
+local actionFocus_ = false
 
 -- 是否正在比赛直播中（用于 tick 分发）
 local inMatch_ = false
@@ -56,8 +69,6 @@ local inMatch_ = false
 local inTextMatch_ = false
 -- 是否正在玩操作玩法（用于 tick 分发）
 local inMini_ = false
--- 训练场返回目标："hub" 或 "menu"
-local trainingReturn_ = "hub"
 
 -- ---------------------------------------------------------------------------
 -- 前向声明（这些函数在下方赋值，但被更早定义的函数引用）
@@ -66,6 +77,10 @@ local trainingReturn_ = "hub"
 local showMenu
 ---@type fun()|nil
 local showCreate
+---@type fun()|nil
+local showLifeChapter
+---@type fun(selected: number?)
+local showStoryArchive
 ---@type fun()|nil
 local showHub
 ---@type fun()|nil
@@ -79,21 +94,29 @@ local showFinance
 ---@type fun()|nil
 local showWelfare
 ---@type fun()|nil
+local showBadge
+---@type fun()|nil
+local showRival
+---@type fun()|nil
+local showRoster
+---@type fun()|nil
+local showAllStar
+---@type fun()|nil
+local showSettings
+---@type fun()|nil
 local showTraining
 ---@type fun(mode: string)|nil
 local enterMiniGame
 ---@type fun()|nil
-local showDuel
----@type fun()|nil
-local duelAttack
----@type fun()|nil
-local duelDefend
----@type fun()|nil
-local duelDribble
----@type fun()|nil
 local runWeek
+---@type fun(state: CareerState)|nil
+local runWeekConfirmed
 ---@type fun()|nil
 local afterMatchFlow
+---@type fun()|nil
+local showRetire
+---@type fun(state: CareerState)|nil
+local kickoffMatch
 ---@type fun()|nil
 local finishWeek
 ---@type fun(state: CareerState)|nil
@@ -126,6 +149,8 @@ end
 ---@param eventData UpdateEventData
 function HandleUpdate(eventType, eventData)
     local dt = eventData:GetFloat("TimeStep")
+    -- 补间动画（得分飘字、抽卡翻牌、数值跳动等）
+    Anim.Update(dt)
     if inMatch_ then
         ScreenMatch.tick(dt)
     end
@@ -134,6 +159,10 @@ function HandleUpdate(eventType, eventData)
     end
     if inMini_ then
         ScreenMini.tick(dt)
+    end
+    -- 全明星周末（三分/扣篮大赛）自管界面树，用 isActive 兜住，避免空转
+    if ScreenAllStar.isActive() then
+        ScreenAllStar.tick(dt)
     end
     -- 广告看门狗（超时保护）
     Ads.tick(dt)
@@ -154,10 +183,12 @@ local function showEventCard(ev, onDone)
     end
 
     local function onChoose(idx)
+        if ev.storyChapter and state.seenEvents[ev.id] then return end
         local result = EventSystem.choose(state, idx)
         if result.sfx then
             Audio.Play(result.sfx)
         end
+        if ev.storyChapter then Career.save() end
 
         -- 显示结果反馈
         local resultScreen = ScreenEvent.BuildResult(
@@ -165,18 +196,32 @@ local function showEventCard(ev, onDone)
             result.response,
             result.parts,
             function()
+                -- 选项触发了退役 → 直接进入生涯结算，不再继续周循环
+                if result.retired and showRetire then
+                    Career.save()
+                    showRetire()
+                    return
+                end
                 onDone()
-            end,
-            function()  -- 经纪人放料：把事件热度换成人气
-                local gain = Config.AD_REWARDS.pressFame
-                Career.addFame(gain)
-                Career.save()
-                return string.format("经纪人把这件事捅给了媒体，人气 +%d", gain)
             end)
         UI.SetRoot(resultScreen)
     end
 
     UI.SetRoot(ScreenEvent.Build(ev, state.name, onChoose))
+end
+
+-- 主线章节不参与随机卡池：每个年龄首次到达时稳定出现。
+showLifeChapter = function()
+    local state = Career.state
+    if not state then showMenu(); return end
+    local ev = LifeStory.atAge(state)
+    if ev then
+        EventSystem.current = ev
+        print(string.format("[Story] 开始 %d 岁章节：%s", state.age, ev.title))
+        showEventCard(ev, function() showHub() end)
+    else
+        showHub()
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -187,7 +232,9 @@ showMenu = function()
     inMatch_ = false
     selectedAction_ = ""
     actionResultText_ = ""
+    actionDoneThisWeek_ = false
     weekPlayed_ = false
+    actionFocus_ = false
 
     UI.SetRoot(ScreenMenu.Build(
         function()  -- 新游戏
@@ -196,19 +243,13 @@ showMenu = function()
         function()  -- 继续
             local data = Career.load()
             if data then
-                showHub()
+                if data.retired then showHub() else showLifeChapter() end
             else
-                UI.Toast.Show("读档失败，请重新开始", { duration = 2, variant = "error", position = "bottom" })
+                UI.Toast.Show("读档失败，请重新开始", { duration = 2, variant = "error", position = "top" })
             end
         end,
-        function()  -- 训练馆
-            local data = Career.load()
-            if data then
-                trainingReturn_ = "menu"
-                showTraining()
-            else
-                UI.Toast.Show("请先开始生涯", { duration = 2, variant = "error", position = "bottom" })
-            end
+        function()  -- 设置
+            showSettings()
         end
     ))
 end
@@ -221,32 +262,10 @@ showCreate = function()
     inMatch_ = false
     UI.SetRoot(ScreenCreate.Build(
         function(name, positionId, hometown, originId, talentIds)
-            local state = Career.createPlayer(name, positionId, hometown, originId, talentIds)
+            Career.createPlayer(name, positionId, hometown, originId, talentIds)
             Career.save()
-
-            local originName = Career.getOriginDef(originId).name
-            local cardCount = #(state.talentCards or {})
-
-            -- 开场事件：生涯起步
-            local intro = {
-                id = "intro",
-                title = "生涯，从这里开始",
-                body = string.format(
-                    "%s，%d 岁，来自%s。\n%s。\n今天，你在%s的报名表上签下了自己的名字。\n篮球在你手里，路在你自己脚下。",
-                    state.name, state.age, hometown,
-                    cardCount > 0
-                        and string.format("以【%s】的身份走到这里，身上带着 %d 样绝活", originName, cardCount)
-                        or string.format("以【%s】的身份走到这里", originName),
-                    state.team),
-                art = Config.ART.bgStreet,
-                options = {
-                    { text = "「我要成为最好的球员」", response = "你把这句话写在了球鞋内侧。每次低头系鞋带，都会看见它。", fx = { morale = 10, fame = 30 } },
-                    { text = "「先打好每一场球」", response = "教练听到这句话，点了点头。脚踏实地，是最难得的天赋。", fx = { morale = 6, iq = 2 } },
-                },
-            }
-            showEventCard(intro, function()
-                showHub()
-            end)
+            -- 建角后先进入人生序章，之后每次生日进入下一章。
+            showLifeChapter()
         end,
         function()
             showMenu()
@@ -266,26 +285,55 @@ openActionPicker = function()
         return
     end
 
+    -- 幂等保护：本周行动已经结算过就不再放行（否则可以反复点"更换行动"刷属性）
+    if actionDoneThisWeek_ then
+        UI.Toast.Show("本周行动已经安排过了，推进一周后再来。",
+            { duration = 2, variant = "warning", position = "top" })
+        showHub()
+        return
+    end
+
+    -- 周行动的结算键保存在生涯存档中，重新进入游戏也不能再次刷奖励。
+    if state.actionDoneKey == string.format("%d-%d", state.season, state.week) then
+        UI.Toast.Show("本周行动已经安排过了，推进一周后再来。",
+            { duration = 2, variant = "warning", position = "top" })
+        showHub()
+        return
+    end
+
     UI.SetRoot(ScreenHub.BuildActionPicker(state,
         function(actionId)  -- 选定行动
+            if actionDoneThisWeek_ or state.actionDoneKey == string.format("%d-%d", state.season, state.week) then return end
             selectedAction_ = actionId
-            local mul = actionDouble_ and Config.AD_REWARDS.actionDoubleMul or 1.0
-            actionResultText_ = Career.applyAction(actionId, mul)
-            actionDouble_ = false
+            actionDoneThisWeek_ = true
+            state.actionDoneKey = string.format("%d-%d", state.season, state.week)
+            -- 加练只随训练消耗；休息/商业活动不会浪费已观看的奖励。
+            local training = actionId:sub(1, 6) == "train_"
+            local boosted = training and state.actionDoublePending == true
+            actionResultText_ = Career.applyAction(actionId, boosted and 2.0 or 1.0)
+            if boosted then state.actionDoublePending = false end
+            Career.save()
+            actionFocus_ = false
             Audio.Play("levelup")
-            UI.Toast.Show(actionResultText_, { duration = 2.5, variant = "success", position = "bottom" })
+            UI.Toast.Show(actionResultText_, { duration = 2.5, variant = "success", position = "top" })
             showHub()
         end,
         function()  -- 取消
-            actionDouble_ = false
+            actionFocus_ = false
             showHub()
         end,
         {
-            adActive = actionDouble_,
-            onAd = function()
-                actionDouble_ = true
-                return string.format("私人教练已到位：本周训练收益 ×%.1f", Config.AD_REWARDS.actionDoubleMul)
+            focusActive = actionFocus_,
+            focusCharges = state.focusCharges or 0,
+            actionDoubleActive = state.actionDoublePending == true,
+            onFocusAd = function()
+                actionFocus_ = true
+                return Career.grantFocus(Config.AD_REWARDS.focusCharges)
             end,
+            onActionDouble = not state.actionDoublePending and function()
+                state.actionDoublePending = true
+                return "私人教练已就位：下次周训练属性与经验收益翻倍（休息/商业活动不消耗）"
+            end or nil,
             rebuild = function()
                 openActionPicker()
             end,
@@ -302,6 +350,12 @@ showHub = function()
         return
     end
 
+    -- 生涯已结束：退役后的人生章节继续推进。
+    if state.retired then
+        showRetire()
+        return
+    end
+
     local root = ScreenHub.Build(state, {
         onAction = function()  -- 打开行动选择
             openActionPicker()
@@ -310,7 +364,6 @@ showHub = function()
             runWeek()
         end,
         onTraining = function()  -- 打开训练馆
-            trainingReturn_ = "hub"
             showTraining()
         end,
         actionText = actionResultText_,
@@ -319,7 +372,7 @@ showHub = function()
             Career.save()
             UI.Toast.Show(
                 state.matchMode == "text" and "已切换到文字直播模式" or "已切换到操作比赛模式",
-                { duration = 2, variant = "info", position = "bottom" })
+                { duration = 2, variant = "info", position = "top" })
             showHub()
         end,
         onAttr = function()  -- 打开能力特训（加点）页
@@ -334,8 +387,83 @@ showHub = function()
         onWelfare = function()
             showWelfare()
         end,
+        onBadge = function()
+            showBadge()
+        end,
+        onRival = function()
+            showRival()
+        end,
+        onRoster = function()
+            showRoster()
+        end,
+        onAllStar = function()
+            showAllStar()
+        end,
+        allStarReady = AllStar.shouldOffer(state),
+        rosterNote = Teammates.chemistryLabel(state),
+        rivalNote = (function()
+            local r = Rival.get(state)
+            if not r then return nil end
+            local w, l = Rival.headToHead(state)
+            return string.format("%s · %d胜%d负", r.name, w, l)
+        end)(),
+        onStory = function()
+            showStoryArchive()
+        end,
     })
     UI.SetRoot(root)
+end
+
+showStoryArchive = function(selected)
+    local state = Career.state
+    if not state then showMenu(); return end
+    local history = state.storyHistory or {}
+    local index = selected or #history
+    local content = {}
+    if index > 0 then
+        local chapter = history[index]
+        content = {
+            Common.Block(string.format("%d 岁 · %s", chapter.age, chapter.title), {
+                Common.Body(LifeStory.read(state, chapter), 14),
+                Common.Sub("你的选择 · " .. chapter.choice, 13),
+                Common.Body(chapter.response, 13),
+            }, { barColor = C.primary }),
+        }
+    else
+        content = { Common.Block("第一页", {
+            Common.Body("每一年，都有值得记住的生活。打完人生序章，这本故事就会有第一篇。", 14),
+        }) }
+    end
+    local pager = {}
+    if index > 1 then
+        pager[#pager + 1] = UI.Button {
+            text = "◀ 上一章", flexGrow = 1, flexBasis = 0, height = 48,
+            onClick = function() showStoryArchive(index - 1) end,
+        }
+    end
+    if index < #history then
+        pager[#pager + 1] = UI.Button {
+            text = "下一章 ▶", flexGrow = 1, flexBasis = 0, height = 48,
+            onClick = function() showStoryArchive(index + 1) end,
+        }
+    end
+    UI.SetRoot(Common.Screen(Career.getStage().bg, {
+        Common.TopBar(string.format("人生故事 %d / %d", index, #history), function()
+            if state.retired then showRetire() else showHub() end
+        end),
+        UI.ScrollView {
+            flexGrow = 1, flexBasis = 0, scrollY = true, showScrollbar = true,
+            children = { UI.Panel {
+                width = "100%", padding = 14, gap = 12,
+                children = content,
+            } },
+        },
+        UI.Panel {
+            width = "100%", flexDirection = "row", gap = 8,
+            padding = 12, backgroundColor = C.bgPanel,
+            children = pager,
+        },
+    }, { dim = 0.55 }))
 end
 
 -- ---------------------------------------------------------------------------
@@ -361,6 +489,73 @@ end
 showWelfare = function()
     inMatch_ = false
     UI.SetRoot(ScreenWelfare.Build(function()
+        showHub()
+    end))
+end
+
+--- 设置页
+showSettings = function()
+    UI.SetRoot(ScreenSettings.Build(function()
+        showMenu()
+    end))
+end
+
+--- 徽章墙
+showBadge = function()
+    inMatch_ = false
+    UI.SetRoot(ScreenBadge.Build(function()
+        showHub()
+    end))
+end
+
+--- 宿敌页：职业阶段起，宿敌是本季最重要的叙事线
+showRival = function()
+    inMatch_ = false
+    inMini_ = false
+    local state = Career.state
+    if not state then
+        showMenu()
+        return
+    end
+    Rival.ensure(state)
+    UI.SetRoot(ScreenRival.Build(state, function()
+        Career.save()
+        showHub()
+    end))
+end
+
+--- 阵容页：队友、羁绊与化学反应（化学反应会真实影响球队实力）
+showRoster = function()
+    inMatch_ = false
+    inMini_ = false
+    local state = Career.state
+    if not state then
+        showMenu()
+        return
+    end
+    Teammates.ensure(state)
+    UI.SetRoot(ScreenRoster.Build(state, function()
+        Career.save()
+        showHub()
+    end))
+end
+
+--- 全明星周末：三分大赛 + 扣篮大赛（赛季中段自动开启，也可从主页手动进入）
+showAllStar = function()
+    inMatch_ = false
+    inMini_ = false
+    local state = Career.state
+    if not state then
+        showMenu()
+        return
+    end
+    if not AllStar.shouldOffer(state) then
+        UI.Toast.Show("本赛季的全明星周末已经结束了", { duration = 2.5, variant = "info", position = "top" })
+        showHub()
+        return
+    end
+    UI.SetRoot(ScreenAllStar.Build(state, function()
+        Career.save()
         showHub()
     end))
 end
@@ -405,15 +600,19 @@ local function applyMiniRewards(rewards, forDouble)
     end
 
     local stamina = rewards.stamina
-    if stamina and not (forDouble and stamina < 0) then
+    if stamina and stamina ~= 0 and (not forDouble or stamina > 0) then
+        local before = state.stamina
         Career.addStamina(stamina)
-        table.insert(texts, string.format("体力 %+d", stamina))
+        local actual = state.stamina - before
+        if actual ~= 0 then table.insert(texts, string.format("体力 %+d", actual)) end
     end
-    if rewards.morale then
+    if rewards.morale and rewards.morale ~= 0 and (not forDouble or rewards.morale > 0) then
+        local before = state.morale
         Career.addMorale(rewards.morale)
-        table.insert(texts, string.format("士气 %+d", rewards.morale))
+        local actual = state.morale - before
+        if actual ~= 0 then table.insert(texts, string.format("士气 %+d", actual)) end
     end
-    if rewards.fame then
+    if rewards.fame and rewards.fame ~= 0 and (not forDouble or rewards.fame > 0) then
         Career.addFame(rewards.fame)
         table.insert(texts, string.format("人气 %+d", rewards.fame))
     end
@@ -422,6 +621,7 @@ local function applyMiniRewards(rewards, forDouble)
 end
 
 --- 显示玩法结算并应用奖励
+--- 训练基础奖励在玩法结束时结算；可选看广告额外领取一次正收益。
 ---@param title string
 ---@param lines string[]
 ---@param rewards table|nil
@@ -433,22 +633,26 @@ local function showMiniResult(title, lines, rewards, onDone)
         rewardStr = table.concat(rewardTexts, "   ")
     end
 
-    -- 结算页唯一的广告位：再拿一份（加练不额外扣体能）
-    ---@type fun(): string|nil
-    local onDouble = nil
+    local canDouble = false
     if rewards then
-        onDouble = function()
-            local again = applyMiniRewards(rewards, true)
-            if #again == 0 then
-                return "这次已经没有能再加的收益了"
+        local state = Career.state
+        if state then
+            for i = 1, #Config.ATTRS do
+                local key = Config.ATTRS[i].key
+                if (rewards[key] or 0) > 0 and (state.attrs[key] or 0) < Career.getPotential(key) then
+                    canDouble = true
+                end
             end
-            return "再来一组：" .. table.concat(again, "   ")
+            if (rewards.morale or 0) > 0 and state.morale < 100 then canDouble = true end
+            if (rewards.stamina or 0) > 0 and state.stamina < 100 then canDouble = true end
+            if (rewards.fame or 0) > 0 then canDouble = true end
         end
     end
-
     UI.SetRoot(ScreenTraining.BuildResult(title, lines, rewardStr, function()
         onDone()
-    end, onDouble))
+    end, canDouble and function()
+        applyMiniRewards(rewards, true)
+    end or nil))
 end
 
 showTraining = function()
@@ -484,11 +688,7 @@ showTraining = function()
             end
         end,
         function()  -- 返回
-            if trainingReturn_ == "menu" then
-                showMenu()
-            else
-                showHub()
-            end
+            showHub()
         end
     ))
 end
@@ -499,6 +699,18 @@ enterMiniGame = function(mode)
     local state = Career.state
     if not state then
         showMenu()
+        return
+    end
+
+    -- 体能门槛：训练馆的属性收益必须付出体能代价，否则体力见底后
+    -- 反复重开玩法就能无限刷属性（一周把能力堆满）。这里做入口兜底，
+    -- 界面上的入口在体能不足时也会置灰。
+    local ok, reason = Career.canTrain(mode)
+    if not ok then
+        Audio.Play("rim", 0.6)
+        UI.Toast.Show(reason, { duration = 2.4, variant = "warning", position = "top" })
+        inMini_ = false
+        showTraining()
         return
     end
 
@@ -525,7 +737,7 @@ enterMiniGame = function(mode)
                     "手感冰凉，明天再来。",
                 }, {
                     scoring = gain,
-                    stamina = -12,
+                    stamina = -Career.trainingCost("shot"),
                     morale = made >= 7 and 4 or -2,
                 }, function()
                     showTraining()
@@ -551,7 +763,7 @@ enterMiniGame = function(mode)
                 }, {
                     playmaking = gain,
                     athletic = gain > 0 and 1 or 0,
-                    stamina = -14,
+                    stamina = -Career.trainingCost("dribble"),
                 }, function()
                     showTraining()
                 end)
@@ -576,270 +788,13 @@ enterMiniGame = function(mode)
                 }, {
                     defense = gain,
                     iq = gain > 0 and 1 or 0,
-                    stamina = -14,
+                    stamina = -Career.trainingCost("defend"),
                 }, function()
                     showTraining()
                 end)
             end)
         UI.SetRoot(root)
-
-    elseif mode == "duel" then
-        showDuel()
     end
-end
-
--- ---------------------------------------------------------------------------
--- 斗牛赛（1v1，串联突破 + 投篮 + 防守）
--- ---------------------------------------------------------------------------
-
----@type DuelState|nil
-local duel_ = nil
-
---- 斗牛赛进攻：突破阶段
-duelDribble = function()
-    local state = Career.state
-    if not state or not duel_ then return end
-    inMini_ = true
-    ScreenMini.clear()
-
-    local root = ScreenMini.BuildDribble(state.attrs, 1, 1.0,
-        function(success)
-            inMini_ = false
-            ScreenMini.clear()
-            local d = duel_
-            if not d then return end
-
-            if success then
-                MiniGame.duelLog(d, string.format("第 %d 回合：突破成功，获得出手机会。", d.round))
-                -- 突破成功 → 进入投篮
-                duelAttack()
-            else
-                MiniGame.duelLog(d, string.format("第 %d 回合：突破被断，进攻失败。", d.round))
-                Audio.Play("rim")
-                -- 进攻失败 → 轮到对手
-                duelDefend()
-            end
-        end)
-    UI.SetRoot(root)
-end
-
---- 斗牛赛进攻：投篮阶段
-duelAttack = function()
-    local state = Career.state
-    if not state or not duel_ then return end
-    inMini_ = true
-    ScreenMini.clear()
-
-    local root = ScreenMini.BuildShot(state.attrs, state.stamina, 1, 1.0,
-        function(made, points)
-            inMini_ = false
-            ScreenMini.clear()
-            local d = duel_
-            if not d then return end
-
-            if made > 0 then
-                d.myScore = d.myScore + points
-                MiniGame.duelLog(d, string.format("第 %d 回合：出手命中 +%d 分（%d:%d）。", d.round, points, d.myScore, d.oppScore))
-                Audio.Play("cheer", 0.5)
-            else
-                MiniGame.duelLog(d, string.format("第 %d 回合：出手不中（%d:%d）。", d.round, d.myScore, d.oppScore))
-            end
-            d.round = d.round + 1
-
-            if MiniGame.duelCheckOver(d) then
-                showDuel()
-            else
-                duelDefend()
-            end
-        end)
-    UI.SetRoot(root)
-end
-
---- 斗牛赛防守回合
-duelDefend = function()
-    local state = Career.state
-    if not state or not duel_ then return end
-    inMini_ = true
-    ScreenMini.clear()
-
-    local root = ScreenMini.BuildDefend(state.attrs.defense or 30, 1, 1.0,
-        function(success)
-            inMini_ = false
-            ScreenMini.clear()
-            local d = duel_
-            if not d then return end
-
-            if success then
-                MiniGame.duelLog(d, string.format("第 %d 回合：防守成功，夺回球权（%d:%d）。", d.round, d.myScore, d.oppScore))
-                Audio.Play("block", 0.7)
-            else
-                local oppPoints = math.random(1, 3)
-                d.oppScore = d.oppScore + oppPoints
-                MiniGame.duelLog(d, string.format("第 %d 回合：对手打进 +%d 分（%d:%d）。", d.round, oppPoints, d.myScore, d.oppScore))
-            end
-
-            if MiniGame.duelCheckOver(d) then
-                showDuel()
-            else
-                duelDribble()
-            end
-        end)
-    UI.SetRoot(root)
-end
-
-showDuel = function()
-    inMini_ = false
-    ScreenMini.clear()
-
-    local state = Career.state
-    local d = duel_
-    if not state or not d then return end
-
-    -- 结束：展示结算
-    if d.done then
-        local win = d.win
-        local rewardLines = {
-            string.format("最终比分  %d : %d", d.myScore, d.oppScore),
-            win and "你在这片场地上赢下了对手。" or "对手先到分，这场输了。",
-        }
-        showMiniResult(
-            win and "斗 牛 胜 利" or "斗 牛 落 败",
-            rewardLines,
-            {
-                scoring = win and 2 or 1,
-                playmaking = win and 1 or 0,
-                athletic = win and 1 or 0,
-                morale = win and 8 or -4,
-                fame = win and 60 or 10,
-                stamina = -18,
-            },
-            function()
-                duel_ = nil
-                showTraining()
-            end)
-        return
-    end
-
-    -- 进行中：展示战况
-    ---@type table[]
-    local logWidgets = {}
-    local n = math.min(8, #d.log)
-    for i = 1, n do
-        logWidgets[i] = UI.Label {
-            text = d.log[i],
-            fontSize = 12,
-            fontColor = C.textSub,
-            whiteSpace = "normal",
-            lineHeight = 1.5,
-        }
-    end
-
-    local root = Common.Screen(Config.ART.bgStreet, {
-        UI.Panel {
-            height = 60,
-            flexDirection = "row",
-            alignItems = "center",
-            justifyContent = "space-between",
-            paddingHorizontal = 16,
-            children = {
-                Common.Title("斗 牛 赛", 20),
-                UI.Button {
-                    text = "退出",
-                    width = 68,
-                    height = 36,
-                    fontSize = 13,
-                    backgroundColor = C.bgCard,
-                    textColor = C.textMain,
-                    borderWidth = 3,
-                    borderColor = C.outline,
-                    onClick = function()
-                        Audio.Play("click")
-                        duel_ = nil
-                        showTraining()
-                    end,
-                },
-            },
-        },
-
-        -- 比分板
-        UI.Panel {
-            margin = 14,
-            flexDirection = "row",
-            alignItems = "center",
-            justifyContent = "center",
-            gap = 14,
-            padding = 16,
-            backgroundColor = C.bgCard,
-            borderWidth = 3,
-            borderColor = C.outline,
-            children = {
-                UI.Panel {
-                    flexGrow = 1, flexBasis = 0,
-                    flexDirection = "column", alignItems = "center",
-                    children = {
-                        UI.Label { text = "你", fontSize = 12, fontWeight = "bold", fontColor = C.textSub },
-                        UI.Label {
-                            text = tostring(d.myScore),
-                            fontSize = 44,
-                            fontWeight = "bold",
-                            fontColor = C.primary,
-                            textStroke = { width = 3, color = "#1a1614" },
-                        },
-                    },
-                },
-                UI.Label {
-                    text = string.format("先到 %d 分", d.targetScore),
-                    fontSize = 12,
-                    fontWeight = "bold",
-                    fontColor = C.textSub,
-                },
-                UI.Panel {
-                    flexGrow = 1, flexBasis = 0,
-                    flexDirection = "column", alignItems = "center",
-                    children = {
-                        UI.Label { text = "对手", fontSize = 12, fontWeight = "bold", fontColor = C.textSub },
-                        UI.Label {
-                            text = tostring(d.oppScore),
-                            fontSize = 44,
-                            fontWeight = "bold",
-                            fontColor = C.secondary,
-                            textStroke = { width = 3, color = "#1a1614" },
-                        },
-                    },
-                },
-            },
-        },
-
-        -- 战况日志
-        UI.ScrollView {
-            flexGrow = 1,
-            flexBasis = 0,
-            scrollY = true,
-            showScrollbar = true,
-            children = {
-                UI.Panel {
-                    width = "100%",
-                    flexDirection = "column",
-                    gap = 8,
-                    paddingHorizontal = 16,
-                    paddingBottom = 16,
-                    children = logWidgets,
-                },
-            },
-        },
-
-        UI.Panel {
-            padding = 14,
-            children = {
-                Common.PrimaryButton("开 始 第 " .. d.round .. " 回 合", function()
-                    Audio.Play("whistle")
-                    duelDribble()
-                end),
-            },
-        },
-    }, { dim = 0.5 })
-
-    UI.SetRoot(root)
 end
 
 -- ---------------------------------------------------------------------------
@@ -849,13 +804,12 @@ end
 --- 处理赛季结束后的结算展示
 ---@param events string[]
 ---@param onDone fun()
----@param events string[]
----@param onDone fun()
----@param campUsed boolean|nil 本赛季是否已经用过特训营
-local function showSeasonReport(events, onDone, campUsed)
+local function showSeasonReport(events, onDone)
     ---@type table[]
     local lines = {}
+    local wonTitle = false
     for i = 1, #events do
+        if events[i]:find("总冠军") then wonTitle = true end
         lines[i] = UI.Label {
             text = events[i],
             fontSize = 13,
@@ -863,6 +817,27 @@ local function showSeasonReport(events, onDone, campUsed)
             whiteSpace = "normal",
             lineHeight = 1.6,
         }
+    end
+
+    -- 夺冠是情绪高点：用欢呼声强调（其他赛季结算走普通音效）
+    Audio.Play(wonTitle and "cheer" or "levelup")
+
+    local state = Career.state
+    -- 本赛季的广告次数由存档配额限制，达到潜力硬上限时不提供无收益广告。
+    local campAd = state and not state.retired
+        and Ads.left(state, "seasonCamp") > 0
+    -- bestVal 必须与 bestKey/bestName 同层：下方的广告说明文案要用它展示「现在多少」
+    local bestKey, bestName, bestVal = nil, nil, 0
+    if campAd then
+        bestVal = -1
+        for i = 1, #Config.ATTRS do
+            local def = Config.ATTRS[i]
+            local value = state.attrs[def.key] or 0
+            if value > bestVal then
+                bestKey, bestName, bestVal = def.key, def.name, value
+            end
+        end
+        if bestKey and Career.getPotential(bestKey) >= Config.ATTR_MAX + 20 then campAd = false end
     end
 
     local card = UI.Panel {
@@ -897,33 +872,24 @@ local function showSeasonReport(events, onDone, campUsed)
                 gap = 8,
                 children = lines,
             },
-            -- 赛季结算页唯一的广告位：休赛期特训营（潜力上限突破）
-            campUsed and UI.Panel {
-                width = "100%",
-                padding = 10,
-                backgroundColor = { 232, 246, 232, 255 },
-                borderWidth = 2,
-                borderColor = Config.COLORS.outline,
-                children = {
-                    UI.Label {
-                        text = "✓ 本赛季的特训营已经去过了",
-                        fontSize = 12,
-                        fontWeight = "bold",
-                        fontColor = Config.COLORS.success,
-                        textAlign = "center",
-                    },
-                },
-            } or AdWidgets.Button(Career.state, "seasonCamp", function()
+            -- 潜力突破：点之前就要看得见「差多少」。
+            -- 只写「上限 +5」玩家无感——写清「现在 82 / 上限 87，已经练不动了」，
+            -- 这个广告位才有说服力（按钮上直接内联突破前后的数值）。
+            campAd and AdWidgets.AdTag(string.format(
+                "%s 现在 %d，潜力上限 %d —— 已经顶到头，再练也不涨。突破后才继续涨。",
+                bestName or "最高能力", bestVal,
+                Career.getPotential(bestKey))) or UI.Panel { height = 0 },
+            campAd and AdWidgets.Button(state, "seasonCamp", function()
                 local msg = Career.breakPotentialTop(Config.AD_REWARDS.seasonCampStep)
-                Career.save()
-                return msg
+                return "休赛期特训营：" .. msg .. "（仅提升潜力上限，不直接增加能力）"
             end, {
-                height = 50,
-                fontSize = 14,
-                onFinished = function()
-                    showSeasonReport(events, onDone, true)
-                end,
-            }),
+                label = string.format("▶ 看广告 · %s上限 %d → %d（本季剩 %d 次）",
+                    bestName or "最高能力",
+                    Career.getPotential(bestKey),
+                    Career.getPotential(bestKey) + Config.AD_REWARDS.seasonCampStep,
+                    Ads.left(state, "seasonCamp")),
+                onFinished = function() showSeasonReport(events, onDone) end,
+            }) or UI.Panel { height = 0 },
             UI.Button {
                 text = "进 入 新 赛 季",
                 width = "100%",
@@ -1014,7 +980,7 @@ local function showInjuryCard(state, onRest)
         Audio.Play("click")
         UI.Toast.Show(
             string.format("伤病中（%s），本周无法出战", Injury.statusText(state)),
-            { duration = 3, variant = "warning", position = "bottom" })
+            { duration = 3, variant = "warning", position = "top" })
         Career.addLog(string.format("因%s缺席本周比赛。", name))
         onRest()
     end, { height = 52 }))
@@ -1165,6 +1131,189 @@ local function showStaminaCard(state, onGo)
     })
 end
 
+--- 推进前的「本周日程」确认
+--- 此前点「推进一周」直接开打，玩家不知道对手是谁、主场还是客场、有没有剧情。
+--- 现在先摊开这周要面对什么，玩家确认后才进入比赛。
+---@param state CareerState
+---@param onConfirm fun()
+local function showWeekPreview(state, onConfirm)
+    local Schedule = require("Core.Schedule")
+    local Timeline = require("Core.Timeline")
+
+    local weekKind = Schedule.weekKind(state)
+    local opp = Schedule.weekOpponent(state)
+    local tlEntry = Timeline.get(state, state.week)
+
+    ---@type table[]
+    local children = {}
+
+    -- 周次 + 类型
+    ---@type string
+    local kindText
+    ---@type RGBAColor
+    local kindColor
+    if weekKind == "playoff" then
+        kindText, kindColor = "季后赛", C.primary
+    elseif weekKind == "game" then
+        kindText, kindColor = "比赛日", C.primary
+    elseif weekKind == "offseason" then
+        kindText, kindColor = "休赛期", C.textSub
+    else
+        kindText, kindColor = "休整日", C.secondary
+    end
+
+    table.insert(children, UI.Panel {
+        width = "100%",
+        flexDirection = "row",
+        alignItems = "center",
+        gap = 8,
+        children = {
+            Common.Tag(string.format("第 %d 周", state.week), kindColor),
+            Common.Tag(kindText, kindColor),
+        },
+    })
+
+    -- 对手情报
+    if opp then
+        table.insert(children, UI.Panel {
+            width = "100%",
+            flexDirection = "column",
+            gap = 8,
+            padding = 14,
+            backgroundColor = C.bgCardLight,
+            borderWidth = 2,
+            borderColor = C.outline,
+            children = {
+                UI.Label {
+                    text = opp.playoff
+                        and string.format("%s · 对阵 %s", opp.roundName or "季后赛", opp.opponent)
+                        or string.format("对阵 %s", opp.opponent),
+                    fontSize = 17,
+                    fontWeight = "bold",
+                    fontColor = C.textMain,
+                    whiteSpace = "normal",
+                },
+                UI.Panel {
+                    width = "100%",
+                    flexDirection = "row",
+                    justifyContent = "space-between",
+                    children = {
+                        Common.KV("对手实力", string.format("%d（%s）", opp.strength,
+                            Schedule.strengthLabel(opp.strength, state))),
+                        Common.KV("场地", opp.home and "主场" or "客场",
+                            opp.home and C.success or C.textSub),
+                    },
+                },
+                Common.KV("你的体能", string.format("%d", math.floor(state.stamina or 0)),
+                    (state.stamina or 0) < Config.AD_REWARDS.staminaGate and C.danger or C.success),
+            },
+        })
+    else
+        table.insert(children, Common.Body(
+            "本周没有比赛。可以安排一次周行动（训练 / 休息 / 商业活动），再推进到下一周。", 13))
+    end
+
+    -- 剧情预告
+    if tlEntry and tlEntry.title then
+        table.insert(children, UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            alignItems = "flex-start",
+            gap = 8,
+            padding = 10,
+            backgroundColor = { 255, 246, 224, 255 },
+            borderWidth = 2,
+            borderColor = C.accent,
+            children = {
+                UI.Label { text = "本周剧情", fontSize = 11, fontWeight = "bold",
+                    fontColor = { 196, 120, 16, 255 }, flexShrink = 0 },
+                UI.Label {
+                    text = tlEntry.title,
+                    fontSize = 13,
+                    fontWeight = "bold",
+                    fontColor = C.textMain,
+                    whiteSpace = "normal",
+                    flexGrow = 1, flexShrink = 1, flexBasis = 0,
+                },
+            },
+        })
+    end
+
+    -- 未安排行动时提醒一句（不阻塞，只提示）
+    if actionResultText_ == "" and not Career.hasGameThisWeek() then
+        table.insert(children, Common.Sub("提示：本周还没安排行动，推进前可以先安排一次。", 11))
+    end
+
+    local card = UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        backgroundColor = C.bgCard,
+        borderWidth = 3,
+        borderColor = C.outline,
+        overflow = "hidden",
+        children = {
+            Common.Bar("本 周 日 程", kindColor),
+            UI.Panel {
+                width = "100%",
+                flexDirection = "column",
+                gap = 12,
+                padding = 16,
+                children = children,
+            },
+        },
+    }
+
+    ---@type table[]
+    local actions = {}
+    if opp then
+        table.insert(actions, Common.PrimaryButton("开 打", function()
+            Audio.Play("whistle")
+            onConfirm()
+        end))
+    else
+        table.insert(actions, Common.PrimaryButton("推 进 一 周", function()
+            Audio.Play("whistle")
+            onConfirm()
+        end))
+    end
+    table.insert(actions, Common.OutlineButton("先 去 安 排 行 动", function()
+        Audio.Play("click")
+        openActionPicker()
+    end, { height = 46, fontSize = 14 }))
+
+    UI.SetRoot(UI.Panel {
+        width = "100%",
+        height = "100%",
+        flexDirection = "row",
+        justifyContent = "center",
+        alignItems = "center",
+        backgroundColor = { 26, 22, 20, 200 },
+        children = {
+            UI.Panel {
+                width = "100%",
+                maxWidth = Common.CONTENT_MAX_W,
+                paddingHorizontal = 16,
+                children = {
+                    UI.Panel {
+                        width = "100%",
+                        flexDirection = "column",
+                        gap = 10,
+                        children = {
+                            card,
+                            UI.Panel {
+                                width = "100%",
+                                flexDirection = "column",
+                                gap = 8,
+                                children = actions,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    })
+end
+
 runWeek = function()
     local state = Career.state
     if not state then
@@ -1172,6 +1321,27 @@ runWeek = function()
         return
     end
 
+    -- 生涯已结束 → 直接进入退役结算
+    if state.retired then
+        showRetire()
+        return
+    end
+
+    -- 只有本年龄主线读完才允许推进，老存档也不会错过当前年龄的篇章。
+    if LifeStory.atAge(state) then
+        showLifeChapter()
+        return
+    end
+
+    -- 先摊开本周日程，玩家确认后再进入比赛
+    showWeekPreview(state, function()
+        runWeekConfirmed(state)
+    end)
+end
+
+--- 玩家确认日程后，真正执行本周
+---@param state CareerState
+runWeekConfirmed = function(state)
     -- 1) 若本周有比赛 → 先打比赛
     if Career.hasGameThisWeek() then
         -- 伤病期间：队医询问（广告在这里是"跳过等待"的捷径，原生路径是休战）
@@ -1185,12 +1355,12 @@ runWeek = function()
         -- 体能见底：体能师询问（广告把体能拉满，原生路径是硬着头皮上）
         if (state.stamina or 0) < Config.AD_REWARDS.staminaGate and Ads.left(state, "stamina") > 0 then
             showStaminaCard(state, function()
-                startWeekMatch(state)
+                kickoffMatch(state)
             end)
             return
         end
 
-        startWeekMatch(state)
+        kickoffMatch(state)
         return
     end
 
@@ -1198,44 +1368,292 @@ runWeek = function()
     afterMatchFlow()
 end
 
+--- 生涯结算：退役典礼 + 名人堂评价
+showRetire = function()
+    inMatch_ = false
+    inMini_ = false
+    ScreenMini.clear()
+
+    local state = Career.state
+    if not state then
+        showMenu()
+        return
+    end
+
+    -- 主动退役也要读完当年的主线，不能从「最后一舞」直接跳过人生章节。
+    local missedChapter = LifeStory.atAge(state)
+    if missedChapter then
+        EventSystem.current = missedChapter
+        showEventCard(missedChapter, function() showRetire() end)
+        return
+    end
+
+    -- 退役后继续推进人生章节；终章读完才显示最终评价。
+    local nextChapter = LifeStory.afterRetirement(state)
+    if nextChapter then
+        EventSystem.current = nextChapter
+        print(string.format("[Story] 退役后章节：%s", nextChapter.title))
+        showEventCard(nextChapter, function()
+            Career.save()
+            showRetire()
+        end)
+        return
+    end
+    state.postStoryDone = true
+
+    local C = Config.COLORS
+    local verdict = Career.careerVerdict()
+    local seasons = state.season - 1
+
+    ---@type table[]
+    local statRows = {
+        { "效力赛季", tostring(seasons) .. " 季" },
+        { "出场次数", tostring(state.games or 0) .. " 场" },
+        { "生涯总得分", tostring(state.totalPoints or 0) .. " 分" },
+        { "全明星", tostring(state.allStars or 0) .. " 次" },
+        { "常规赛 MVP", tostring(state.mvps or 0) .. " 次" },
+        { "总冠军", tostring(state.titles or 0) .. " 座" },
+        { "生涯人气", tostring(math.floor(state.fame or 0)) },
+    }
+
+    ---@type table[]
+    local rows = {}
+    for i = 1, #statRows do
+        rows[i] = UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            justifyContent = "space-between",
+            children = {
+                UI.Label { text = statRows[i][1], fontSize = 13, fontColor = C.textSub },
+                UI.Label { text = statRows[i][2], fontSize = 13, fontWeight = "bold", fontColor = C.textMain },
+            },
+        }
+    end
+
+    ---@type table[]
+    local honorWidgets = {}
+    local honors = state.honors or {}
+    local hn = math.min(6, #honors)
+    for i = 1, hn do
+        honorWidgets[i] = UI.Label {
+            text = "· " .. honors[#honors - hn + i],
+            fontSize = 12,
+            fontColor = C.accent,
+            whiteSpace = "normal",
+        }
+    end
+
+    local card = UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        gap = 12,
+        padding = 22,
+        backgroundColor = C.bgPanel,
+        borderWidth = 3,
+        borderColor = C.outline,
+        children = {
+            UI.Panel {
+                width = "100%",
+                height = 130,
+                backgroundImage = Config.ART.evTrophy,
+                backgroundFit = "cover",
+                borderWidth = 2,
+                borderColor = C.outline,
+            },
+            UI.Label {
+                text = "一 生 的 尾 声",
+                fontSize = 22,
+                fontWeight = "bold",
+                fontColor = C.primary,
+                letterSpacing = 3,
+                textAlign = "center",
+            },
+            UI.Label {
+                text = LifeStory.ending(state),
+                fontSize = 14,
+                fontColor = C.textMain,
+                whiteSpace = "normal",
+                lineHeight = 1.8,
+            },
+            UI.Label {
+                text = "球场记录 · 回望这一生",
+                fontSize = 16,
+                fontWeight = "bold",
+                fontColor = C.textSub,
+            },
+            UI.Panel {
+                width = "100%",
+                padding = 12,
+                flexDirection = "column",
+                gap = 6,
+                backgroundColor = C.bgDeep,
+                borderWidth = 2,
+                borderColor = C.outline,
+                children = rows,
+            },
+            UI.Label {
+                text = "职业生涯评价 · " .. verdict,
+                fontSize = 13,
+                fontColor = C.textMain,
+                textAlign = "center",
+                whiteSpace = "normal",
+                lineHeight = 1.5,
+            },
+            #honorWidgets > 0 and UI.Panel {
+                width = "100%",
+                flexDirection = "column",
+                gap = 4,
+                children = honorWidgets,
+            } or UI.Panel { width = 0, height = 0 },
+            Common.OutlineButton("翻 阅 我 的 一 生", function()
+                showStoryArchive()
+            end),
+            UI.Button {
+                text = "开 启 新 的 生 涯",
+                width = "100%",
+                height = 52,
+                fontSize = 16,
+                fontWeight = "bold",
+                backgroundColor = C.primary,
+                textColor = { 255, 255, 255, 255 },
+                borderWidth = 3,
+                borderColor = C.outline,
+                onClick = function()
+                    Audio.Play("whistle")
+                    showCreate()
+                end,
+            },
+            Common.OutlineButton("返 回 主 菜 单", function()
+                Career.save()
+                showMenu()
+            end),
+        },
+    }
+
+    Audio.Play("levelup")
+    UI.SetRoot(Common.Screen(Config.ART.bgPro, {
+        UI.ScrollView {
+            flexGrow = 1,
+            flexBasis = 0,
+            scrollY = true,
+            showScrollbar = true,
+            children = {
+                UI.Panel {
+                    width = "100%",
+                    padding = 16,
+                    flexDirection = "column",
+                    children = { card },
+                },
+            },
+        },
+    }, { dim = 0.6 }))
+end
+
+--- 赛前事件 → 正式开赛（此前 beforeMatch 事件池从未被调用，6 条高质量内容被埋没）
+---@param state CareerState
+kickoffMatch = function(state)
+    local ev = EventSystem.beforeMatch(state, {})
+    if ev then
+        showEventCard(ev, function()
+            Career.save()
+            startWeekMatch(state)
+        end)
+    else
+        startWeekMatch(state)
+    end
+end
+
 --- 比赛结束后的统一处理：伤病判定 → 赛后事件
 ---@param state CareerState
 onMatchFinished = function(state)
     local result = state.lastResult
 
+    -- 把本场结果写回赛程 / 驱动季后赛晋级
+    if result then
+        local Schedule = require("Core.Schedule")
+        local win = (result.win == true) or (result.won == true)
+        local myPoints = result.myPoints or result.points or 0
+
+        if state.playoff and not state.playoff.done then
+            local po = Schedule.advancePlayoff(state, win)
+            if po.champion then
+                UI.Toast.Show("★★★ 夺得总冠军！", { duration = 4, variant = "success", position = "top" })
+                Audio.Play("cheer")
+                Audio.Play("win")
+            elseif po.eliminated then
+                UI.Toast.Show(string.format("季后赛止步于%s", po.roundName), { duration = 3, variant = "error", position = "top" })
+            elseif po.advanced then
+                UI.Toast.Show("晋级总决赛！", { duration = 3, variant = "success", position = "top" })
+            end
+        else
+            local game = Schedule.gameThisWeek(state)
+            if game then
+                Schedule.recordResult(state, game, win, myPoints)
+                print(string.format("[Schedule] 第%d周 对阵%s %s", game.week, game.opponent, win and "胜" or "负"))
+            end
+        end
+    end
+
     -- 伤病判定（操作模式全力出战，风险略高）
     local inj = Injury.roll(state, state.matchMode == "live")
     if inj then
         Injury.apply(state, inj)
+        Audio.Play("injury")
         UI.Toast.Show(
             string.format("受伤！%s，预计伤停 %d 天", inj.name, inj.days),
-            { duration = 3.5, variant = "error", position = "bottom" })
+            { duration = 3.5, variant = "error", position = "top" })
         Career.addLog(string.format("比赛中%s，伤停 %d 天。", inj.name, inj.days))
     end
 
-    --- 战报之后：赛后事件 → 日常事件
-    local function afterReport()
-        local ev = EventSystem.afterMatch(state, result or {})
-        if ev then
-            showEventCard(ev, function()
-                Career.save()
-                afterMatchFlow()
-            end)
-        else
-            Career.save()
-            afterMatchFlow()
-        end
+    -- 队友系统：赛后更新化学反应与羁绊（直接影响下一场的球队实力）
+    -- 宿敌系统：本场对手是宿敌所在球队时记录交手，并按剧情弧返回一张宿敌事件卡
+    ---@type table|nil
+    local rivalEvent = nil
+    if result then
+        local win = (result.win == true) or (result.won == true)
+        local myPoints = result.myPoints or result.points or 0
+        Teammates.onMatch(state, win, myPoints, math.floor(myPoints / 4))
+        rivalEvent = Rival.onMatch(state, result.opponent or "", win, myPoints)
     end
 
-    -- 赛后战报（内含本场唯一的广告位：教练复盘）
+    --- 战报之后：宿敌剧情 → 赛后事件 → 日常事件
+    local function afterReport()
+        local function afterRival()
+            local ev = EventSystem.afterMatch(state, result or {})
+            if ev then
+                showEventCard(ev, function()
+                    Career.save()
+                    afterMatchFlow()
+                end)
+            else
+                Career.save()
+                afterMatchFlow()
+            end
+        end
+
+        if rivalEvent then
+            -- 宿敌事件走同一套事件卡流程；标记 once 语义由 Rival 内部用 seenEvents 保证
+            EventSystem.current = rivalEvent
+            showEventCard(rivalEvent, function()
+                Career.save()
+                afterRival()
+            end)
+            return
+        end
+        afterRival()
+    end
+
+    -- 赛后战报
     if result then
-        UI.SetRoot(ScreenReport.Build(result, afterReport, false))
+        UI.SetRoot(ScreenReport.Build(result, afterReport))
     else
         afterReport()
     end
 end
 
---- 比赛之后：日常事件 → 推进
+--- 比赛之后：本周剧情事件 → 推进
+--- 事件由赛季时间线预先编排（见 Core/Timeline.lua），不再是推进时的随机盲盒。
+--- 时间线上这周没排事件，就安静地过去。
 afterMatchFlow = function()
     local state = Career.state
     if not state then
@@ -1243,7 +1661,17 @@ afterMatchFlow = function()
         return
     end
 
-    local ev = EventSystem.daily(state)
+    local Timeline = require("Core.Timeline")
+    local ev = EventSystem.fromTimeline(state, state.week)
+    if not ev then
+        -- 时间线这周没排事件时，交给支线剧情（9 条关系线 / 63 章）。
+        -- 支线此前只存在于数据文件里，完全没接入流程，等于白写。
+        ev = SideStory.pick(state)
+        if ev then
+            EventSystem.current = ev
+            print(string.format("[SideStory] %s · %s", tostring(ev.line), tostring(ev.title)))
+        end
+    end
     if ev then
         showEventCard(ev, function()
             finishWeek()
@@ -1263,36 +1691,73 @@ finishWeek = function()
 
     local beforeSeason = state.season
     local events = Career.advanceWeek()
+    -- 队友系统：每周自然变化（化学反应向基准回归、羁绊缓慢衰减）
+    Teammates.onWeek(state)
     Career.save()
 
     -- 重置本周状态
     selectedAction_ = ""
     actionResultText_ = ""
+    actionDoneThisWeek_ = false
     weekPlayed_ = false
 
-    -- 赛季结束
-    if state.season ~= beforeSeason then
-        -- 赛季末事件
-        local ev = EventSystem.seasonEnd(state)
-        if ev then
-            showEventCard(ev, function()
+    -- 到达退役年龄：仍先让玩家读完这一年龄的篇章，再进入尾声。
+    if state.retired then
+        local lastChapter = LifeStory.atAge(state)
+        if lastChapter then
+            EventSystem.current = lastChapter
+            showEventCard(lastChapter, function()
                 showSeasonReport(events, function()
                     Career.save()
-                    showHub()
+                    showRetire()
                 end)
             end)
         else
             showSeasonReport(events, function()
                 Career.save()
-                showHub()
+                showRetire()
             end)
+        end
+        return
+    end
+
+    -- 赛季结束：保留原有休赛期事件，再进入新年龄的人生章节。
+    if state.season ~= beforeSeason then
+        -- 队友与宿敌的赛季推进（成长/衰退/离队/新人、宿敌实力成长）
+        local rosterMsgs = Teammates.onSeasonEnd(state)
+        for i = 1, #rosterMsgs do events[#events + 1] = rosterMsgs[i] end
+        local rivalMsgs = Rival.onSeasonEnd(state)
+        for i = 1, #rivalMsgs do events[#events + 1] = rivalMsgs[i] end
+
+        local function afterSeasonEvent()
+            showSeasonReport(events, function()
+                Career.save()
+                showLifeChapter()
+            end)
+        end
+        local ev = EventSystem.seasonEnd(state)
+        if ev then
+            showEventCard(ev, afterSeasonEvent)
+        else
+            afterSeasonEvent()
         end
         return
     end
 
     -- 展示本周发生的事
     if #events > 0 then
-        UI.Toast.Show(table.concat(events, "  "), { duration = 3, variant = "info", position = "bottom" })
+        UI.Toast.Show(table.concat(events, "  "), { duration = 3, variant = "info", position = "top" })
+    end
+
+    -- 全明星周末：赛季过半（第 6 周）自动开启，作为赛季中段的节日与喘息点。
+    -- 先 markDone 再进入，避免玩家退出后每周重复被拦。
+    if state.week == 6 and AllStar.shouldOffer(state) then
+        AllStar.markDone(state)
+        Career.save()
+        UI.Toast.Show("★ 你入选了本赛季全明星！周末的挑战开始了", { duration = 3, variant = "success", position = "top" })
+        Audio.Play("crowdRoar")
+        showAllStar()
+        return
     end
 
     showHub()
@@ -1313,6 +1778,8 @@ function Start()
 
     -- 音频
     Audio.Init(scene_)
+    -- 应用上次保存的音量/静音设置
+    ScreenSettings.LoadAndApply()
 
     -- 主题
     Theme.Setup()
@@ -1333,5 +1800,9 @@ function Start()
 end
 
 function Stop()
+    -- 退出兜底：把当前进度落盘，避免最后一次操作（如比赛奖励）随进程一起丢掉
+    if Career.state then
+        Career.save()
+    end
     print("[篮途] 游戏退出")
 end

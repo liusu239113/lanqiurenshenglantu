@@ -5,10 +5,8 @@
 
 local UI = require("urhox-libs/UI")
 local Config = require("Core.Config")
-local Career = require("Core.Career")
 local Audio = require("Core.Audio")
 local Common = require("UI.Common")
-local AdWidgets = require("UI.AdWidgets")
 
 local ScreenEvent = {}
 
@@ -22,7 +20,7 @@ local C = Config.COLORS
 function ScreenEvent.Build(ev, playerName, onChoose)
     -- 正文里的 %s 替换为球员名
     local bodyText = ev.body or ""
-    if bodyText:find("%s") then
+    if bodyText:find("%s", 1, true) then
         bodyText = string.format(bodyText, playerName)
     end
 
@@ -62,7 +60,7 @@ function ScreenEvent.Build(ev, playerName, onChoose)
             -- 插图
             UI.Panel {
                 width = "100%",
-                height = 180,
+                height = ev.storyChapter and 110 or 180,
                 backgroundImage = ev.art or Config.ART.bgTraining,
                 backgroundFit = "cover",
                 borderBottomWidth = 3,
@@ -98,11 +96,18 @@ function ScreenEvent.Build(ev, playerName, onChoose)
                 children = {
                     UI.Label {
                         text = bodyText,
-                        fontSize = 14,
+                        fontSize = ev.storyChapter and 15 or 14,
                         fontColor = C.textMain,
                         whiteSpace = "normal",
                         lineHeight = 1.7,
                     },
+                    ev.storyChapter and UI.Label {
+                        text = "—— 向下阅读，做出这一年的选择 ——",
+                        fontSize = 11,
+                        fontColor = C.textSub,
+                        textAlign = "center",
+                        whiteSpace = "normal",
+                    } or UI.Panel { height = 0 },
                     UI.Panel {
                         flexDirection = "column",
                         gap = 10,
@@ -114,6 +119,8 @@ function ScreenEvent.Build(ev, playerName, onChoose)
         },
     }
 
+    -- 事件卡限高 + 可滚动：正文可能 3~4 行、选项最多 3 条，
+    -- 居中布局下内容超高会被 Yoga 压缩，把文字顶出卡片边框
     return UI.Panel {
         width = "100%",
         height = "100%",
@@ -125,8 +132,17 @@ function ScreenEvent.Build(ev, playerName, onChoose)
             UI.Panel {
                 width = "100%",
                 maxWidth = Common.CONTENT_MAX_W,
+                maxHeight = "92%",
                 paddingHorizontal = 16,
-                children = { card },
+                children = {
+                    UI.ScrollView {
+                        flexGrow = 1,
+                        flexBasis = 0,
+                        scrollY = true,
+                        showScrollbar = true,
+                        children = { card },
+                    },
+                },
             },
         },
     }
@@ -137,9 +153,8 @@ end
 ---@param response string
 ---@param parts string[]
 ---@param onClose fun()
----@param onPress fun(): string|nil 看广告把这件事捅给媒体（返回提示文案），nil 则不显示该入口
 ---@return Panel
-function ScreenEvent.BuildResult(title, response, parts, onClose, onPress)
+function ScreenEvent.BuildResult(title, response, parts, onClose)
     ---@type table[]
     local fxChildren = {}
     for i = 1, #parts do
@@ -174,9 +189,6 @@ function ScreenEvent.BuildResult(title, response, parts, onClose, onPress)
                         gap = 8,
                         children = fxChildren,
                     } or UI.Panel { height = 0 },
-                    -- 本页唯一的广告位：把事件热度变现成人气
-                    onPress and AdWidgets.Button(Career.state, "press", onPress,
-                        { height = 48, fontSize = 14 }) or UI.Panel { height = 0 },
                     Common.PrimaryButton("继 续", function()
                         Audio.Play("click")
                         onClose()
@@ -186,6 +198,7 @@ function ScreenEvent.BuildResult(title, response, parts, onClose, onPress)
         },
     }
 
+    -- 结果卡限高 + 可滚动：response 文本较长，且可能带多条 fx 标签
     return UI.Panel {
         width = "100%",
         height = "100%",
@@ -197,8 +210,17 @@ function ScreenEvent.BuildResult(title, response, parts, onClose, onPress)
             UI.Panel {
                 width = "100%",
                 maxWidth = Common.CONTENT_MAX_W,
+                maxHeight = "92%",
                 paddingHorizontal = 16,
-                children = { card },
+                children = {
+                    UI.ScrollView {
+                        flexGrow = 1,
+                        flexBasis = 0,
+                        scrollY = true,
+                        showScrollbar = true,
+                        children = { card },
+                    },
+                },
             },
         },
     }

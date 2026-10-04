@@ -50,14 +50,21 @@ function Common.Screen(bgPath, contentChildren, opts)
         })
     end
 
-    -- 内容列
-    table.insert(layers, UI.Panel {
+    -- 内容列：套一层安全区，背景仍全屏铺满，内容避让刘海/挖孔与底部手势条
+    table.insert(layers, UI.SafeAreaView {
         width = "100%",
         height = "100%",
-        maxWidth = Common.CONTENT_MAX_W,
-        alignSelf = "center",
-        flexDirection = "column",
-        children = contentChildren,
+        edges = { "top", "bottom" },
+        children = {
+            UI.Panel {
+                width = "100%",
+                height = "100%",
+                maxWidth = Common.CONTENT_MAX_W,
+                alignSelf = "center",
+                flexDirection = "column",
+                children = contentChildren,
+            },
+        },
     })
 
     return UI.Panel {

@@ -13,12 +13,14 @@ local ScreenMenu = {}
 local C = Config.COLORS
 
 --- 构建主菜单
+--- 说明：主菜单只负责「开始 / 继续 / 设置」这类会话级操作。
+--- 训练馆是生涯内的玩法，入口放在主页底栏，不在这里堆玩法入口。
 ---@param onNewGame fun()
 ---@param onContinue fun()
----@param onTraining fun()
+---@param onSettings fun()
 ---@return Panel
-function ScreenMenu.Build(onNewGame, onContinue, onTraining)
-    Audio.PlayBgm("daily")
+function ScreenMenu.Build(onNewGame, onContinue, onSettings)
+    Audio.PlayBgm("menu")
 
     local hasSave = Career.hasSave()
 
@@ -34,15 +36,16 @@ function ScreenMenu.Build(onNewGame, onContinue, onTraining)
                 backgroundImage = Config.ART.logo,
                 backgroundFit = "contain",
             },
-            -- 标题（粗黑 + 白描边，漫画封面字）
+            -- 标题（粗黑 + 墨边，漫画封面字）
+            -- 全名 7 字较长，字号与字距需比 2 字标题收紧，否则会撑破竖屏宽度
             UI.Label {
                 text = Config.TITLE,
-                fontSize = 62,
+                fontSize = 42,
                 fontWeight = "bold",
                 fontColor = C.primary,
-                letterSpacing = 12,
-                textStroke = { width = 5, color = "#1a1614" },
-                textShadow = { offsetX = 5, offsetY = 5, blur = 0, color = { 26, 22, 20, 160 } },
+                letterSpacing = 3,
+                textStroke = { width = 4, color = "#1a1614" },
+                textShadow = { offsetX = 4, offsetY = 4, blur = 0, color = { 26, 22, 20, 160 } },
             },
             -- 副标题条（黑底白字）
             UI.Panel {
@@ -78,30 +81,11 @@ function ScreenMenu.Build(onNewGame, onContinue, onTraining)
         onNewGame()
     end))
 
-    -- 训练馆入口（需要已有球员）
-    if hasSave then
-        table.insert(buttons, UI.Button {
-            text = "🏀 训 练 馆 · 玩 法",
-            width = "100%",
-            height = 52,
-            fontSize = 16,
-            fontWeight = "bold",
-            backgroundColor = { 168, 62, 148, 255 },
-            textColor = { 255, 255, 255, 255 },
-            borderWidth = 3,
-            borderColor = C.outline,
-            letterSpacing = 2,
-            onClick = function()
-                Audio.Play("click")
-                onTraining()
-            end,
-        })
-    end
-
-    -- 玩法说明卡
-    table.insert(buttons, Common.Block("核 心 玩 法", {
+    -- 玩法说明卡（介绍游戏是什么，不是入口）
+    table.insert(buttons, Common.Block("这 是 什 么 游 戏", {
         UI.Label {
-            text = "投篮时机条 · 一对一突破 · 防守读心 · 斗牛赛 · 战术板",
+            text = "从 15 岁的街头球场起步，打比赛、练属性、进季后赛、签代言、转会，"
+                .. "直到退役那天回看整个生涯。",
             fontSize = 12,
             fontColor = C.textSub,
             whiteSpace = "normal",
@@ -109,12 +93,46 @@ function ScreenMenu.Build(onNewGame, onContinue, onTraining)
         },
     }, { barColor = { 168, 62, 148, 255 }, padding = 12 }))
 
-    table.insert(buttons, Common.OutlineButton("清除存档", function()
-        Audio.Play("click")
-        Career.clearSave()
-        UI.Toast.Show("存档已清除", { duration = 2, variant = "info", position = "bottom" })
-        UI.SetRoot(ScreenMenu.Build(onNewGame, onContinue, onTraining))
-    end, { height = 46, fontSize = 14 }))
+    -- 设置 + 清除存档并排（此前无任何音量/静音入口）
+    table.insert(buttons, UI.Panel {
+        width = "100%",
+        flexDirection = "row",
+        gap = 10,
+        children = {
+            UI.Button {
+                text = "设 置",
+                flexGrow = 1, flexBasis = 0,
+                height = 46,
+                fontSize = 14,
+                fontWeight = "bold",
+                backgroundColor = C.bgCardLight,
+                textColor = C.textMain,
+                borderWidth = 3,
+                borderColor = C.outline,
+                onClick = function()
+                    Audio.Play("click")
+                    onSettings()
+                end,
+            },
+            UI.Button {
+                text = "清除存档",
+                flexGrow = 1, flexBasis = 0,
+                height = 46,
+                fontSize = 14,
+                fontWeight = "bold",
+                backgroundColor = C.bgCard,
+                textColor = C.danger,
+                borderWidth = 3,
+                borderColor = C.outline,
+                onClick = function()
+                    Audio.Play("click")
+                    Career.clearSave()
+                    UI.Toast.Show("存档已清除", { duration = 2, variant = "info", position = "top" })
+                    UI.SetRoot(ScreenMenu.Build(onNewGame, onContinue, onSettings))
+                end,
+            },
+        },
+    })
 
     local buttonBlock = UI.Panel {
         width = "100%",

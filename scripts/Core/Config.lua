@@ -5,7 +5,7 @@
 
 local Config = {}
 
-Config.TITLE = "篮途"
+Config.TITLE = "篮球人生：篮途"
 Config.SUBTITLE = "从街球场到世界之巅"
 Config.VERSION = "2.0.0"
 
@@ -87,13 +87,28 @@ Config.POSITIONS = {
 ---@field teamStrength number
 ---@field bg string
 
+-- 区间不重叠：updateStage 取首个匹配项，重叠会让实际阶段比配置晚一年
 ---@type StageDef[]
 Config.STAGES = {
-    { id = "street", name = "街头球场", minAge = 15, maxAge = 17, teamPrefix = "街区联队", teamStrength = 45, bg = "bg/bg_street.png" },
-    { id = "high",   name = "高中联赛", minAge = 17, maxAge = 19, teamPrefix = "高中校队", teamStrength = 58, bg = "bg/bg_highschool.png" },
-    { id = "ncaa",   name = "大学联赛", minAge = 19, maxAge = 21, teamPrefix = "大学校队", teamStrength = 72, bg = "bg/bg_college.png" },
-    { id = "pro",    name = "职业联赛", minAge = 21, maxAge = 34, teamPrefix = "职业队",   teamStrength = 86, bg = "bg/bg_pro.png" },
-    { id = "legend", name = "传奇殿堂", minAge = 34, maxAge = 99, teamPrefix = "名人堂",   teamStrength = 90, bg = "bg/bg_pro.png" },
+    { id = "street", name = "街头球场", minAge = 15, maxAge = 16, teamPrefix = "街区联队", teamStrength = 45, bg = "bg/bg_street.jpg" },
+    { id = "high",   name = "高中联赛", minAge = 17, maxAge = 18, teamPrefix = "高中校队", teamStrength = 58, bg = "bg/bg_highschool.jpg" },
+    { id = "ncaa",   name = "大学联赛", minAge = 19, maxAge = 20, teamPrefix = "大学校队", teamStrength = 72, bg = "bg/bg_college.jpg" },
+    { id = "pro",    name = "职业联赛", minAge = 21, maxAge = 33, teamPrefix = "职业队",   teamStrength = 86, bg = "bg/bg_pro.jpg" },
+    { id = "legend", name = "传奇殿堂", minAge = 34, maxAge = 99, teamPrefix = "名人堂",   teamStrength = 90, bg = "bg/bg_pro.jpg" },
+}
+
+-- ---------------------------------------------------------------------------
+-- 生涯节奏
+-- ---------------------------------------------------------------------------
+Config.CAREER = {
+    -- 每几个赛季长 1 岁。1 = 每赛季一岁（15 岁开局 → 约 20 赛季打到传奇殿堂）
+    seasonsPerYear = 1,
+    -- 强制退役年龄（到达后自动进入退役结算）
+    retireAge      = 38,
+    -- 士气对训练收益的乘算下限（士气 0 时训练打几折）
+    lowMoraleMul   = 0.75,
+    -- 低于该士气视为"低落"，开始吃惩罚
+    lowMoraleLine  = 30,
 }
 
 -- ---------------------------------------------------------------------------
@@ -133,6 +148,20 @@ Config.ACTION_GAIN = {
 }
 
 -- ---------------------------------------------------------------------------
+-- 训练馆（独立操作玩法）
+-- 训练馆的属性收益必须和「每周一次的行动」一样付出体能代价，
+-- 否则体力见底后仍能无限重开玩法刷属性，一周就能把能力堆满。
+-- ---------------------------------------------------------------------------
+Config.TRAINING = {
+    -- 进入一次玩法的体能门槛（低于此值无法开练）
+    minStamina = 10,
+    -- 各玩法的体能消耗
+    costShot    = 12,   -- 投篮训练：10 球
+    costDribble = 14,   -- 一对一突破：8 回合
+    costDefend  = 14,   -- 防守读心：8 回合
+}
+
+-- ---------------------------------------------------------------------------
 -- 初始状态
 -- ---------------------------------------------------------------------------
 Config.INIT = {
@@ -165,8 +194,7 @@ Config.SEASON = {
 
 -- ---------------------------------------------------------------------------
 -- 星途出身（建角时的第一层选择）
--- 每条出身 = 属性倾向 + 初始资源 + 叙事包装
--- adLocked = true 的出身需要看一段广告解锁（一次性，只影响本局）
+-- 「天选之星」通过玩家主动观看激励视频解锁；其他出身正常免费选择。
 -- ---------------------------------------------------------------------------
 ---@class OriginDef
 ---@field id string
@@ -175,8 +203,6 @@ Config.SEASON = {
 ---@field desc string
 ---@field attrs table<string, number?>  稀疏表：只写有加成的项
 ---@field init table<string, number?>|nil  初始资源 { morale, fame, money }
----@field adLocked boolean
----@field unlockText string|nil
 
 ---@type OriginDef[]
 Config.ORIGINS = {
@@ -186,7 +212,6 @@ Config.ORIGINS = {
         desc = "没人教过你，全靠一次次被打败又站起来。",
         attrs = { athletic = 4, scoring = 2 },
         init = { morale = 10, fame = 20 },
-        adLocked = false,
     },
     {
         id = "academy", name = "体校科班",
@@ -194,7 +219,6 @@ Config.ORIGINS = {
         desc = "基本功扎实，战术板上的东西你看一遍就懂。",
         attrs = { iq = 4, defense = 2, playmaking = 2 },
         init = { morale = 4 },
-        adLocked = false,
     },
     {
         id = "legacy", name = "名门之后",
@@ -202,16 +226,24 @@ Config.ORIGINS = {
         desc = "资源从不缺，可你得证明自己不只是一个姓氏。",
         attrs = { iq = 2, playmaking = 2 },
         init = { money = 60, fame = 120 },
-        adLocked = false,
     },
     {
         id = "chosen", name = "天选之星",
         tagline = "聚光灯下长大的孩子",
-        desc = "全国直播看着你长大。天赋是入场券，也是枷锁。",
-        attrs = { scoring = 5, athletic = 5, defense = 5 },
-        init = { fame = 300, morale = -8 },
-        adLocked = true,
-        unlockText = "观看一段短片，本局即可使用【天选之星】出身。",
+        desc = "全国直播看着你长大。天赋是入场券，也是枷锁——打得不好，嘘声比谁都响。",
+        -- 属性加成仅 8 点（低于街球浪人的 6 点 × 2 项总量对比是高的，但真正价值在 perk）
+        -- 设计意图：高人气起手 + 人气自增长 + 代言门槛减半 = 前期经济起飞；
+        --          代价是士气 -15，而士气现在会真实影响投篮绿区与队友手感（高风险高回报）
+        attrs = { scoring = 4, athletic = 4 },
+        init = { fame = 300, morale = -15 },
+        perk = {
+            id = "chosen_star",
+            name = "自带流量",
+            desc = "每周 +6 人气 · 代言门槛减半 · 代言收入 +25%",
+            weeklyFame = 6,
+            endorseGateMul = 0.5,
+            endorsePayMul = 1.25,
+        },
     },
 }
 
@@ -251,9 +283,8 @@ Config.TALENTS = {
 --- 抽卡与选卡规则
 Config.TALENT = {
     drawCount      = 6,   -- 每次抽几张
-    pickCount      = 3,   -- 最终带走几张
-    freeReroll     = 3,   -- 免费刷新次数
-    legendGuarantee = 2,  -- 广告刷新时的传奇保底张数
+    pickCount      = 3,   -- 普通报告最终带走几张
+    adLegendCount  = 2,   -- 看广告重拟报告时保底传奇张数
 }
 
 --- 稀有度展示色（描边/标签用）
@@ -280,34 +311,50 @@ Config.TALENT_WEIGHT = {
 }
 
 -- ---------------------------------------------------------------------------
--- 广告奖励参数（集中调参区：改这里就能调整广告产出，不动业务代码）
+-- 可选资源奖励需完整观看广告；比赛与周训练仍可直接进行。
 -- ---------------------------------------------------------------------------
 Config.AD_REWARDS = {
+    talentRerollSeason = 1,    -- 每次建角重拟报告次数
+    welfareSeason     = 12,    -- 每赛季领取球队补给上限（每周一次，需观看广告）
+    boostSeason       = 4,     -- 球队恢复室快速恢复次数
+    boostStamina      = 30,    -- 单次快速恢复体力
+    doubleRewardSeason = 6,    -- 训练馆额外复制本次正向奖励
+    reviewSeason      = 4,     -- 赛后教练复盘次数
+    pressSeason       = 4,     -- 经纪人放料次数
+    lotterySeason     = 3,     -- 商业推广次数（对齐「每季 3 次」口径：中奖是巨额收入，次数越少越像运气）
+    actionDoubleSeason = 4,    -- 周行动加练次数
+    -- 潜力突破：每季 3 次、单次 +5 上限。落到瓶颈时才有按钮，是本作最强的「卡住了」时刻。
+    seasonCampSeason  = 3,     -- 每赛季休赛期潜力突破次数（仅尚未达到硬上限时可选）
+    tacticSeason      = 1,     -- 解锁高级战术次数
+    reviewExp         = 60,
+    pressFame         = 100,
+    lotteryMoney      = 30,
+    seasonCampStep    = 5,
+    -- 广告是「捷径」不是「主路」：量级需与原生路径（训练拿经验 → 经验换属性点）保持同一档
+    -- 【单次给爽 · 定调】对齐参考作（足球生涯：单次 +5、每季 20 次）的体感——
+    -- 把价值压进「单次点击」而不是「能点很多次」：+1×20 次 与 +3×8 次总量接近，
+    -- 但前者要连点 20 次才有感觉，后者点第一下就觉得划算，完播与复看都更高。
     attrPoints        = 3,     -- 属性页：每次看完获得多少自由属性点
-    attrPointsSeason  = 20,    -- 属性页：每赛季广告次数上限
+    -- ⚠️ 平衡红线：「练不如看」是主动选的方向（转化优先），但训练必须仍然有用。
+    --    满额 8 × 3 = 24 点 vs 原生 10+ 点（≈70%）。若玩家反馈「练没意义了」，
+    --    压次数（4~6 次 → 12~18 点），别动单次的 +3 —— 单次爽感才是转化来源。
+    attrPointsSeason  = 8,     -- 属性页：每赛季广告次数上限
     healDaily         = 1,     -- 队医：每天几次
-    boostMultiplier   = 1.5,   -- 训练馆：训练收益倍率
     expPerAttrPoint   = 100,   -- 原生路径：多少经验换 1 点属性
-    lotteryDaily      = 1,     -- 财务页：彩票每天几次
-    lotteryMin        = 80,    -- 彩票最低奖金（万）
-    lotteryMax        = 400,   -- 彩票最高奖金（万）
-    -- 玩法结算：奖励翻倍
-    doubleSeason      = 12,    -- 每赛季可用次数
+    -- 全神贯注：把「训练会失误、收益打折」这件事一次性买断
+    -- 训练本来就有三档收益（手感差时只拿 1 点），且士气/伤病/年龄都会继续打折；
+    -- 这个广告的卖点是「接下来几次训练必定拿满档」，是确定性收益，不是再抽一次。
+    focusCharges      = 3,     -- 看一次广告获得几次「满分训练」
+    focusSeason       = 6,     -- 每赛季可用次数
     -- 赛前体能：回满体力
     staminaDaily      = 1,     -- 每天几次
     staminaGate       = 45,    -- 体力低于此值才会在赛前遇到体能师
-    -- 剧情事件：追加曝光
-    pressDaily        = 1,     -- 每天几次
-    pressFame         = 60,    -- 追加曝光的人气收益
-    -- 周行动：本周训练加倍
-    actionDoubleSeason = 12,   -- 每赛季可用次数
-    actionDoubleMul    = 2.0,  -- 训练收益倍率
-    -- 赛后战报：教练复盘（人气再来一份 + 经验）
-    reviewExp          = 40,   -- 额外经验
-    -- 赛季结算：休赛期特训营（潜力上限突破）
-    seasonCampStep     = 3,    -- 突破点数
-    -- 球队福利：多领一份
-    welfareDaily       = 1,    -- 每天几次
+    -- 转会市场：定向转会
+    pickTeamSeason     = 1,    -- 每赛季可用次数（与原生问价同口径，避免广告完全替代抽签）
+    -- 失利重赛：唯一能直接改写比赛结果的点位，必须严控。
+    -- 3 次/赛季 ≈ 每 10~15 场才用得起一次，玩家会留给真正的关键战（季后赛、宿敌、争冠），
+    -- 而不是「输了就重开」把整个赛季的难度抹平。
+    retrySeason        = 3,    -- 每赛季「看广告重打本场」次数
 }
 
 -- ---------------------------------------------------------------------------
@@ -316,8 +363,21 @@ Config.AD_REWARDS = {
 Config.ECONOMY = {
     moneyPerAttrPoint = 80,    -- 自费特训：花多少钱直接买 1 点属性点（万）
     endorseFameGate   = 300,   -- 赛季末人气达到多少，才会有人来谈代言
-    welfareExp        = 60,    -- 球队福利（每周免费一份）：经验
-    welfareMorale     = 5,     -- 球队福利（每周免费一份）：士气
+    welfareExp        = 60,    -- 球队福利（每周看广告领一次）：经验
+    welfareMorale     = 5,     -- 球队福利（每周看广告领一次）：士气
+
+    -- 代言分档：人气越高，能签的牌子越大、每赛季进账越多。
+    -- 此前代言只有「有 / 无」两态，人气超过 300 后再涨完全不产生收益，
+    -- 导致「经纪人放料」等一切加人气的途径在中后期全部失效（点了白点）。
+    -- 现在人气是持续收益曲线：每 400 人气解锁更高一档品牌。
+    endorseTiers = {
+        { fame = 300,   brands = { "运动饮料", "健身器材" },              payBase = 24  },
+        { fame = 700,   brands = { "球鞋品牌", "功能饮料" },              payBase = 70  },
+        { fame = 1400,  brands = { "腕表", "手机" },                      payBase = 180 },
+        { fame = 2600,  brands = { "汽车", "航空公司" },                  payBase = 420 },
+        { fame = 4500,  brands = { "全球运动品牌", "奢侈品" },            payBase = 900 },
+    },
+    endorsePayPerFame = 0.06,  -- 代言年薪 = 档位基准 + 人气 × 该系数（人气持续放大收益）
 }
 
 -- ---------------------------------------------------------------------------
@@ -422,11 +482,29 @@ Config.ATTR_COLORS = {
 -- 资源路径
 -- ---------------------------------------------------------------------------
 Config.ART = {
-    bgMenu     = "bg/bg_menu.png",
-    bgLocker   = "bg/bg_locker.png",
-    bgTraining = "bg/bg_training.png",
-    bgStreet   = "bg/bg_street.png",
-    bgPro      = "bg/bg_pro.png",
+    -- 背景统一用 JPEG（1080x1920，单张 250~580KB，比原 PNG 省约 60% 体积）
+    bgMenu         = "bg/bg_menu.jpg",
+    bgLocker       = "bg/bg_locker.jpg",
+    bgTraining     = "bg/bg_training.jpg",
+    bgStreet       = "bg/bg_street.jpg",
+    bgPro          = "bg/bg_pro.jpg",
+    -- 高中 / 大学阶段专属背景（LifeStory 早已引用，此前 Config.ART 漏定义导致取到 nil）
+    bgHighschool   = "bg/bg_highschool.jpg",
+    bgCollege      = "bg/bg_college.jpg",
+    -- 功能页专属背景（此前 5 个页面共用 bgLocker，视觉上无法区分系统）
+    bgTrainingRoom = "bg/bg_training_room.jpg",
+    bgOffice       = "bg/bg_office.jpg",
+    bgFinanceRoom  = "bg/bg_finance_room.jpg",
+    bgWelfareRoom  = "bg/bg_welfare_room.jpg",
+    bgTacticsRoom  = "bg/bg_tactics_room.jpg",
+    -- 比赛专用背景（此前复用阶段场景图，与"比赛"语义不符）
+    bgMatch        = "bg/bg_match.jpg",
+    -- 扩充场景（补齐此前缺失的语义场景：盛典/媒体/夜训/私人/康复）
+    bgAllstarArena = "bg/bg_allstar_arena.jpg",
+    bgPressRoom    = "bg/bg_press_room.jpg",
+    bgNightCourt   = "bg/bg_night_court.jpg",
+    bgApartment    = "bg/bg_apartment.jpg",
+    bgRehabRoom    = "bg/bg_rehab_room.jpg",
     logo       = "icon/logo_badge.png",
     avatar     = "icon/avatar_player.png",
     evShot     = "ev/ev_shot.png",
@@ -438,6 +516,12 @@ Config.ART = {
     evTrophy   = "ev/ev_trophy.png",
     evTraining = "ev/ev_training.png",
     evFans     = "ev/ev_fans.png",
+    -- 扩充插图
+    evRival          = "ev/ev_rival.png",
+    evDraft          = "ev/ev_draft.png",
+    evChampionParade = "ev/ev_champion_parade.png",
+    evHallOfFame     = "ev/ev_hall_of_fame.png",
+    evContract       = "ev/ev_contract.png",
 }
 
 Config.SFX = {
@@ -453,14 +537,36 @@ Config.SFX = {
     win      = "audio/sfx/sfx_win.mp3",
     dribble  = "audio/sfx/sfx_dribble.mp3",
     sneaker  = "audio/sfx/sfx_sneaker.mp3",
+    -- 扩充音效
+    crowdRoar     = "audio/sfx/sfx_crowd_roar.mp3",     -- 全场爆发欢呼
+    buzzer        = "audio/sfx/sfx_buzzer.mp3",         -- 终场蜂鸣
+    netSwish      = "audio/sfx/sfx_net_swish.mp3",      -- 刷网
+    mvpChant      = "audio/sfx/sfx_mvp_chant.mp3",      -- MVP 呼声
+    cameraBurst   = "audio/sfx/sfx_camera_burst.mp3",   -- 快门连拍
+    moneyCoin     = "audio/sfx/sfx_money_coin.mp3",     -- 金币入账
+    cardFlip      = "audio/sfx/sfx_card_flip.mp3",      -- 翻牌
+    powerup       = "audio/sfx/sfx_powerup.mp3",        -- 能力突破
+    booCrowd      = "audio/sfx/sfx_boo_crowd.mp3",      -- 客场嘘声
+    sneakerSqueak = "audio/sfx/sfx_sneaker_squeak.mp3", -- 急停摩擦
+    heartbeat     = "audio/sfx/sfx_heartbeat_tense.mp3",-- 关键时刻心跳
+    fanfare       = "audio/sfx/sfx_trophy_fanfare.mp3", -- 夺冠号角
 }
 
 Config.BGM = {
     daily  = "audio/bgm/bgm_daily.ogg",
     battle = "audio/bgm/bgm_battle.ogg",
+    -- 情绪分层：此前 9 个场景共用 daily，情绪曲线完全平坦
+    menu   = "audio/bgm/bgm_menu.ogg",     -- 主菜单主题
+    create = "audio/bgm/bgm_create.ogg",   -- 建角/抽卡
+    result = "audio/bgm/bgm_result.ogg",   -- 赛季结算/夺冠/退役
+    sad    = "audio/bgm/bgm_sad.ogg",      -- 伤病/低谷
 }
 
 -- 存档文件名
 Config.SAVE_FILE = "basketball_career_save.json"
+-- 写入用的临时文件（写完再原子替换到 SAVE_FILE，避免中途崩溃留下半截存档）
+Config.SAVE_TMP_FILE = Config.SAVE_FILE .. ".tmp"
+-- 上一次成功存档的备份（原子替换前轮换，供读档兜底）
+Config.SAVE_BAK_FILE = Config.SAVE_FILE .. ".bak"
 
 return Config

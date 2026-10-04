@@ -1,23 +1,59 @@
 {
   "$schema": "../schemas/project.schema.json",
-  "project_id": "m_efw3",
+  "project_id": "m_twv3",
   "author": {
     "id": "293533708"
   },
   "entry": "main.lua",
-  "version": "1.0.0",
+  "version": "1.1.8",
   "taptap_publish": {
-    "title": "",
-    "description": "",
-    "category": "",
+    "title": "篮球人生：篮途",
+    "description": "从街球场到世界之巅的篮球生涯模拟。建角色、打比赛、练属性、转球队，一步步成为传奇。新增：宿敌系统（一世之敌的恩怨线）、队友阵容与化学反应、全明星周末（三分大赛 + 扣篮大赛）、104 章支线剧情、240+ 随机事件、56 枚徽章。",
+    "category": "simulation",
     "screen_orientation": "portrait",
-    "collection_type": "casual",
-    "trial_note": "",
-    "app_platforms": "1,2"
+    "collection_type": "sports",
+    "trial_note": "有bug和意见可反馈论坛",
+    "app_platforms": "1,2",
+    "app_id": 947317,
+    "miniapp_id": "tapmctrfllhntggt3x",
+    "developer_id": 403350,
+    "gameplay_demo_video_source": "https://tapcode-sce.spark.xd.com/videos/e3cd867d-16c1-4884-b6c6-3baa452caf35/1790496395969-uploaded_e229b468.mp4",
+    "release_phase": "official"
   },
   "assets": {
-    "icon": "",
-    "screenshots": [],
-    "promotional_image": ""
+    "icon": "./game_material/icon.png",
+    "screenshots": [
+      "./game_material/screenshot_hub.png",
+      "./game_material/screenshot_roster.jpg",
+      "./game_material/screenshot_allstar.jpg",
+      "./game_material/screenshot_rival.jpg",
+      "./game_material/screenshot_transfer.png",
+      "./game_material/screenshot_badge.png"
+    ],
+    "promotional_image": "./game_material/promo_title.png",
+    "icon_url": "https://tapcode-sce.spark.xd.com/assets/game_material/m_twv3/icon.png",
+    "promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/m_twv3/promo_title.png",
+    "square_promotional_image": "./game_material/SQUARE_PROMO_2026-09-27T07-50-04_01.jpg",
+    "screenshot_urls": [
+      "https://tapcode-sce.spark.xd.com/assets/game_material/m_twv3/screenshot_hub.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/m_twv3/screenshot_roster.jpg",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/m_twv3/screenshot_allstar.jpg",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/m_twv3/screenshot_rival.jpg",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/m_twv3/screenshot_transfer.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/m_twv3/screenshot_badge.png"
+    ],
+    "cover_vertical": "./.project/game_material/COVER_VERTICAL_2026-09-27T07-36-37_01.png",
+    "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/篮球人生：篮途/COVER_VERTICAL_2026-09-27T07-36-37_01.png",
+    "cover_horizontal": "./.project/game_material/COVER_HORIZONTAL_2026-09-27T07-36-37_01.png",
+    "cover_horizontal_url": "https://tapcode-sce.spark.xd.com/assets/game_material/篮球人生：篮途/COVER_HORIZONTAL_2026-09-27T07-36-37_01.png",
+    "square_promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/篮球人生：篮途/SQUARE_PROMO_2026-09-27T07-50-04_01.jpg"
+  },
+  "test_qrcode": {
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/m_twv3_1790398564669.png",
+    "generated_at": "2026-09-26T04:56:04.814Z"
+  },
+  "metadata": {
+    "updated_at": "2026-09-28T10:33:38.815Z",
+    "promo_dependent_hash": "38b8dbe6fbb003cfd81b583de89f261c"
   }
 }

@@ -1,9 +1,8 @@
 -- ============================================================================
 -- ScreenReport — 赛后战报
 --
--- 打完一场球之后的中场总结：比分、个人数据、高光、奖励。
--- 广告位（全页唯一）：「教练复盘」——把本场的人气再结算一份，另加经验。
--- 打完比赛立刻兑现，属于"立竿见影"的收益。
+-- 打完一场球之后的总结：比分、个人数据、高光、奖励。
+-- 比赛基础收益仍由比赛结算发放；赛后复盘是玩家主动选择的额外广告奖励。
 -- ============================================================================
 
 local UI = require("urhox-libs/UI")
@@ -53,10 +52,9 @@ end
 --- 构建赛后战报
 ---@param result table 比赛结果（Match / MatchText 的 result）
 ---@param onClose fun()
----@param adUsed boolean|nil 本场是否已经复盘过（用过就不再显示广告入口）
 ---@return Panel
-function ScreenReport.Build(result, onClose, adUsed)
-    Audio.PlayBgm("daily")
+function ScreenReport.Build(result, onClose)
+    Audio.PlayBgm("result")
 
     local state = Career.state
     local win = result.win == true
@@ -201,42 +199,16 @@ function ScreenReport.Build(result, onClose, adUsed)
         },
     })
 
-    -- 全页唯一的广告位：复盘再结算一份（每场只能复盘一次）
-    if adUsed then
-        table.insert(children, UI.Panel {
-            width = "100%",
-            padding = 10,
-            backgroundColor = { 232, 246, 232, 255 },
-            borderWidth = 2,
-            borderColor = C.outline,
-            children = {
-                UI.Label {
-                    text = "✓ 本场已复盘",
-                    fontSize = 12,
-                    fontWeight = "bold",
-                    fontColor = C.success,
-                    textAlign = "center",
-                },
-            },
-        })
-    else
+    local reviewDone = result.reviewAdDone == true
+    if not reviewDone then
         table.insert(children, AdWidgets.Button(state, "review", function()
-            ---@type string[]
-            local got = {}
-            if rewardFame > 0 then
-                Career.addFame(rewardFame)
-                table.insert(got, string.format("人气 +%d", rewardFame))
-            end
-            local exp = Config.AD_REWARDS.reviewExp
-            Career.addExp(exp)
-            table.insert(got, string.format("经验 +%d", exp))
-            Career.save()
-            return "教练复盘：" .. table.concat(got, "，")
+            result.reviewAdDone = true
+            Career.addExp(Config.AD_REWARDS.reviewExp)
+            return string.format("教练复盘完成：经验 +%d", Config.AD_REWARDS.reviewExp)
         end, {
-            height = 50,
-            fontSize = 14,
+            label = string.format("▶ 看广告 · 赛后复盘，经验 +%d", Config.AD_REWARDS.reviewExp),
             onFinished = function()
-                UI.SetRoot(ScreenReport.Build(result, onClose, true))
+                UI.SetRoot(ScreenReport.Build(result, onClose))
             end,
         }))
     end

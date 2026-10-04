@@ -147,7 +147,7 @@ end
 function ScreenTransfer.Build(onBack)
     Audio.PlayBgm("daily")
 
-    draft_ = { picking = false }
+    draft_ = { picking = Career.state ~= nil and Career.state.pickTeamCredit == true }
 
     ---@type fun(): Panel
     local render
@@ -165,7 +165,7 @@ function ScreenTransfer.Build(onBack)
 
         local draft = draft_
         if not draft then
-            draft = { picking = false }
+            draft = { picking = state.pickTeamCredit == true }
             draft_ = draft
         end
 
@@ -182,10 +182,11 @@ function ScreenTransfer.Build(onBack)
         local function sign(teamName, reason)
             local msg = Transfer.accept(state, stage, teamName, reason)
             state.transferOffers = {}
+            if reason == "通过定向转会指定了下家" then state.pickTeamCredit = false end
             draft.picking = false
             Career.save()
             Audio.Play("levelup")
-            UI.Toast.Show(msg, { duration = 3, variant = "success", position = "bottom" })
+            UI.Toast.Show(msg, { duration = 3, variant = "success", position = "top" })
             renderAndSet()
         end
 
@@ -236,8 +237,8 @@ function ScreenTransfer.Build(onBack)
 
         table.insert(askChildren, UI.Button {
             text = left > 0
-                and string.format("☎ 让经纪人物色下家（本季剩 %d 次）", left)
-                or "☎ 本赛季问价次数已用完",
+                and string.format("让经纪人物色下家（本季剩 %d 次）", left)
+                or "本赛季问价次数已用完",
             width = "100%",
             height = 48,
             fontSize = 14,
@@ -266,15 +267,34 @@ function ScreenTransfer.Build(onBack)
             AdWidgets.AdTag("经纪人说：「有些球队，不用等抽签——只要你点头。」"),
         }
 
+        if state.pickTeamCredit == true then
+            draft.picking = true
+        end
         if not draft.picking then
-            table.insert(adChildren, AdWidgets.Button(state, "pickTeam", function()
-                draft.picking = true
-                return "经纪人开始打电话了"
-            end, { height = 54, fontSize = 15, onFinished = function() renderAndSet() end }))
+            local canPickBetter = false
+            for tier = 3, 1, -1 do
+                local teams = Teams.teamsInTier(stage.id, tier)
+                for i = 1, #teams do
+                    if teams[i] ~= state.team and Transfer.canSign(state, stage, teams[i]) then
+                        canPickBetter = true
+                        break
+                    end
+                end
+                if canPickBetter then break end
+            end
+            if canPickBetter then
+                table.insert(adChildren, AdWidgets.Button(state, "pickTeam", function()
+                    state.pickTeamCredit = true
+                    draft.picking = true
+                    return "定向转会机会已保留，选定球队后才会使用"
+                end, { height = 54, fontSize = 15, onFinished = function() renderAndSet() end }))
+            else
+                table.insert(adChildren, Common.Sub("目前没有符合签约条件的其他球队，无需看广告。", 11))
+            end
         else
             -- 定向模式：列出全部球队，够格就能直接签
             table.insert(adChildren, UI.Label {
-                text = "选一支球队直接加盟",
+                text = "广告解锁的转会机会已保留；选一支符合条件的球队签约，暂不签约可随时回来。",
                 fontSize = 12,
                 fontWeight = "bold",
                 fontColor = C.textMain,
@@ -309,17 +329,16 @@ function ScreenTransfer.Build(onBack)
                     end
                 end
             end
-            table.insert(adChildren, Common.OutlineButton("取 消", function()
+            table.insert(adChildren, Common.OutlineButton("暂 不 签 约（机会保留）", function()
                 Audio.Play("click")
-                draft.picking = false
-                renderAndSet()
+                onBack()
             end, { height = 44, fontSize = 13 }))
         end
 
         local adBlock = Common.Block("定 向 转 会 服 务", adChildren,
             { barColor = { 232, 168, 32, 255 } })
 
-        return Common.Screen(Config.ART.bgLocker, {
+        return Common.Screen(Config.ART.bgOffice, {
             Common.TopBar("转 会 市 场", function()
                 Audio.Play("click")
                 onBack()

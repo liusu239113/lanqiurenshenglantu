@@ -23,12 +23,15 @@ local C = Config.COLORS
 ---@param state CareerState
 ---@param onSelect fun(actionId: string)
 ---@param onCancel fun()
----@param opts table|nil { adActive: boolean, onAd: fun(): string|nil, rebuild: fun()|nil }
+---@param opts table|nil {
+---  focusActive: boolean, focusCharges: number|nil, onFocusAd: fun(): string|nil,
+---  onActionDouble: fun(): string|nil, actionDoubleActive: boolean|nil, rebuild: fun()|nil }
 ---@return Panel
 function ScreenHub.BuildActionPicker(state, onSelect, onCancel, opts)
     local o = opts or {}
-    local onAd = o.onAd
-    local adActive = o.adActive
+    local onFocusAd = o.onFocusAd
+    local focusActive = o.focusActive
+    local focusCharges = o.focusCharges or 0
     ---@type table[]
     local actionButtons = {}
 
@@ -114,10 +117,12 @@ function ScreenHub.BuildActionPicker(state, onSelect, onCancel, opts)
             UI.Panel {
                 width = "100%",
                 maxWidth = Common.CONTENT_MAX_W,
+                height = "92%",
                 paddingHorizontal = 16,
                 children = {
                     UI.Panel {
                         width = "100%",
+                        height = "100%",
                         flexDirection = "column",
                         backgroundColor = C.bgCard,
                         borderWidth = 3,
@@ -130,20 +135,24 @@ function ScreenHub.BuildActionPicker(state, onSelect, onCancel, opts)
                                 flexDirection = "column",
                                 gap = 10,
                                 padding = 14,
+                                flexGrow = 1,
+                                flexBasis = 0,
                                 children = {
                                     UI.Label {
                                         text = "选择一项训练，然后推进一周",
                                         fontSize = 12,
                                         fontColor = C.textSub,
                                     },
-                                    UI.Panel {
-                                        flexDirection = "column",
-                                        gap = 10,
-                                        children = actionButtons,
+                                    UI.ScrollView {
+                                        width = "100%", flexGrow = 1, flexBasis = 0,
+                                        scrollY = true, showScrollbar = true,
+                                        children = { UI.Panel {
+                                            width = "100%", flexDirection = "column", gap = 8,
+                                            children = actionButtons,
+                                        } },
                                     },
 
-                                    -- 本页唯一的广告位：本周训练加倍
-                                    adActive and UI.Panel {
+                                    focusActive and UI.Panel {
                                         width = "100%",
                                         padding = 10,
                                         backgroundColor = { 232, 246, 232, 255 },
@@ -151,8 +160,7 @@ function ScreenHub.BuildActionPicker(state, onSelect, onCancel, opts)
                                         borderColor = C.outline,
                                         children = {
                                             UI.Label {
-                                                text = string.format("✓ 私人教练已到位：本周训练收益 ×%.1f",
-                                                    Config.AD_REWARDS.actionDoubleMul),
+                                                text = string.format("√ 全神贯注中：接下来 %d 次训练必定拿满档", focusCharges),
                                                 fontSize = 12,
                                                 fontWeight = "bold",
                                                 fontColor = C.success,
@@ -160,9 +168,18 @@ function ScreenHub.BuildActionPicker(state, onSelect, onCancel, opts)
                                                 whiteSpace = "normal",
                                             },
                                         },
-                                    } or (onAd and AdWidgets.Button(state, "actionDouble", onAd,
+                                    } or (onFocusAd and AdWidgets.Button(state, "focus", onFocusAd,
                                         { height = 48, fontSize = 13, onFinished = o.rebuild })
                                         or UI.Panel { height = 0 }),
+                                    o.onActionDouble and AdWidgets.Button(state, "actionDouble", function()
+                                        return o.onActionDouble()
+                                    end, {
+                                        label = "▶ 看广告 · 下次周训练属性与经验翻倍",
+                                        height = 48, fontSize = 12, onFinished = o.rebuild,
+                                    }) or (o.actionDoubleActive and UI.Label {
+                                        text = "√ 私人教练已就位：下次周训练属性与经验翻倍",
+                                        fontSize = 12, fontColor = C.success, whiteSpace = "normal",
+                                    } or UI.Panel { height = 0 }),
 
                                     Common.OutlineButton("取消", function()
                                         Audio.Play("click")
@@ -193,6 +210,14 @@ end
 ---@field onTransfer fun()|nil     转会市场
 ---@field onFinance fun()|nil      经纪与财务
 ---@field onWelfare fun()|nil      球队福利
+---@field onBadge fun()|nil        徽章墙
+---@field onRival fun()|nil        宿敌页
+---@field onRoster fun()|nil       阵容页
+---@field onAllStar fun()|nil      全明星周末
+---@field allStarReady boolean|nil 本赛季全明星周末是否可参加
+---@field rosterNote string|nil    阵容一句话摘要（化学反应档位）
+---@field rivalNote string|nil     宿敌一句话摘要（姓名 + 战绩）
+---@field onStory fun()|nil        已读人生故事
 
 --- 构建主页
 ---@param state CareerState
@@ -208,6 +233,12 @@ function ScreenHub.Build(state, actions)
     local onTransfer = actions.onTransfer
     local onFinance = actions.onFinance
     local onWelfare = actions.onWelfare
+    local onBadge = actions.onBadge
+    local onRival = actions.onRival
+    local onRoster = actions.onRoster
+    local onAllStar = actions.onAllStar
+    local allStarReady = actions.allStarReady == true
+    local onStory = actions.onStory
     Audio.PlayBgm("daily")
 
     local stage = Career.getStage()
@@ -260,7 +291,10 @@ function ScreenHub.Build(state, actions)
                                 children = {
                                     Common.Tag(posName, C.secondary),
                                     Common.Tag(stage.name, C.primary),
-                                    Common.Tag(Career.getOriginDef(state.originId).name, C.textMain),
+                                    -- 带独特机制的出身加 ◆ 标记，提示玩家该出身有额外效果
+                                    Common.Tag(Career.getOriginDef(state.originId).perk
+                                        and ("◆ " .. Career.getOriginDef(state.originId).name)
+                                        or Career.getOriginDef(state.originId).name, C.textMain),
                                     Common.Tag(string.format("%d岁", state.age)),
                                 },
                             },
@@ -360,6 +394,20 @@ function ScreenHub.Build(state, actions)
     local blocks = {}
 
     -- 阶段卡（带背景图的大格）
+    local Schedule = require("Core.Schedule")
+    local Timeline = require("Core.Timeline")
+    Schedule.ensure(state)
+    Timeline.ensure(state)
+    local wins, losses = Schedule.record(state)
+    local recordText = string.format("%s · 球队强度 %d", Transfer.tierName(state.teamTier or 1),
+        Transfer.teamStrength(state, stage))
+    if wins + losses > 0 then
+        recordText = recordText .. string.format(" · 战绩 %d胜%d负", wins, losses)
+    end
+
+    -- 季后赛进行中：在阶段卡顶部盖一条醒目横幅
+    local playoffLabel = Schedule.playoffLabel(state)
+
     table.insert(blocks, UI.Panel {
         width = "100%",
         height = 140,
@@ -384,92 +432,335 @@ function ScreenHub.Build(state, actions)
                         letterSpacing = 2,
                     },
                     UI.Label {
-                        text = string.format("%s · 球队强度 %d", Transfer.tierName(state.teamTier or 1),
-                            Transfer.teamStrength(state, stage)),
+                        text = recordText,
                         fontSize = 12,
                         fontColor = { 240, 235, 225, 220 },
                     },
                 },
             },
+            playoffLabel and UI.Panel {
+                width = "100%",
+                paddingVertical = 6,
+                paddingHorizontal = 14,
+                backgroundColor = C.primary,
+                children = {
+                    UI.Label {
+                        text = "★ " .. playoffLabel,
+                        fontSize = 13,
+                        fontWeight = "bold",
+                        fontColor = { 255, 255, 255, 255 },
+                    },
+                },
+            } or UI.Panel { height = 0 },
         },
     })
 
-    -- 经营与成长：三个最常用的子模块入口，放在首屏可见的位置
+    -- 本人正在经历的人生，比训练面板和数据更先呈现。
+    local history = state.storyHistory or {}
+    local lastChapter = history[#history]
+    table.insert(blocks, Common.Block("人 生 故 事 · " .. tostring(state.age) .. " 岁", {
+        UI.Label {
+            text = lastChapter and lastChapter.title or "下一章，就从今天开始",
+            fontSize = 18, fontWeight = "bold", fontColor = C.primary,
+            whiteSpace = "normal",
+        },
+        UI.Label {
+            text = lastChapter and (lastChapter.response or "") or "球场上的输赢之外，还有家人、伙伴与更漫长的人生。",
+            fontSize = 13, fontColor = C.textMain, whiteSpace = "normal", lineHeight = 1.6,
+        },
+        Common.OutlineButton(string.format("翻 阅 人 生 故 事（%d 章）", #history), function()
+            if onStory then onStory() end
+        end, { height = 48, fontSize = 14 }),
+    }, { barColor = C.primary }))
+
+    -- ---- 本周日程：推进之前先告诉玩家这周会面对什么 ----
+    -- 此前「推进一周」是盲盒：玩家不知道这周是比赛日还是休整日，
+    -- 也不知道有没有剧情事件，更不知道自己跟谁打、比赛日程是什么。
+    local weekKind = Schedule.weekKind(state)
+    local opp = Schedule.weekOpponent(state)
+    local tlEntry = Timeline.get(state, state.week)
+
+    ---@type table[]
+    local weekChildren = {}
+
+    -- 本周标签
+    ---@type string
+    local kindText
+    ---@type RGBAColor
+    local kindColor
+    if weekKind == "playoff" then
+        kindText = "季后赛"
+        kindColor = C.primary
+    elseif weekKind == "game" then
+        kindText = "比赛日"
+        kindColor = C.primary
+    elseif weekKind == "offseason" then
+        kindText = "休赛期"
+        kindColor = C.textSub
+    else
+        kindText = "休整日"
+        kindColor = C.secondary
+    end
+
+    table.insert(weekChildren, UI.Panel {
+        width = "100%",
+        flexDirection = "row",
+        alignItems = "center",
+        gap = 8,
+        children = {
+            Common.Tag(string.format("第 %d 周", state.week), kindColor),
+            Common.Tag(kindText, kindColor),
+            opp and Common.Tag(opp.home and "主场" or "客场", C.textMain) or UI.Panel { width = 0 },
+        },
+    })
+
+    -- 对手情报（有比赛才有）
+    if opp then
+        local strengthText = Schedule.strengthLabel(opp.strength, state)
+        table.insert(weekChildren, UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            justifyContent = "space-between",
+            alignItems = "center",
+            padding = 10,
+            backgroundColor = C.bgCardLight,
+            borderWidth = 2,
+            borderColor = C.outline,
+            children = {
+                UI.Panel {
+                    flexDirection = "column",
+                    gap = 3,
+                    flexGrow = 1,
+                    flexShrink = 1,
+                    flexBasis = 0,
+                    children = {
+                        UI.Label {
+                            text = opp.playoff
+                                and string.format("%s · 对阵 %s", opp.roundName or "季后赛", opp.opponent)
+                                or string.format("对阵 %s", opp.opponent),
+                            fontSize = 14,
+                            fontWeight = "bold",
+                            fontColor = C.textMain,
+                            whiteSpace = "normal",
+                        },
+                        UI.Label {
+                            text = string.format("对手实力 %d · %s", opp.strength, strengthText),
+                            fontSize = 11,
+                            fontColor = C.textSub,
+                        },
+                    },
+                },
+                UI.Label {
+                    text = opp.home and "主场" or "客场",
+                    fontSize = 12,
+                    fontWeight = "bold",
+                    fontColor = opp.home and C.success or C.textSub,
+                    flexShrink = 0,
+                },
+            },
+        })
+    end
+
+    -- 剧情预告（时间线上排了事件才有）
+    if tlEntry and tlEntry.title then
+        table.insert(weekChildren, UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            alignItems = "flex-start",
+            gap = 8,
+            padding = 10,
+            backgroundColor = { 255, 246, 224, 255 },
+            borderWidth = 2,
+            borderColor = C.accent,
+            children = {
+                UI.Label { text = "剧情", fontSize = 11, fontWeight = "bold", fontColor = { 196, 120, 16, 255 }, flexShrink = 0 },
+                UI.Label {
+                    text = tlEntry.title,
+                    fontSize = 12,
+                    fontWeight = "bold",
+                    fontColor = C.textMain,
+                    whiteSpace = "normal",
+                    lineHeight = 1.4,
+                    flexGrow = 1, flexShrink = 1, flexBasis = 0,
+                },
+            },
+        })
+    end
+
+    table.insert(blocks, Common.Block("本 周 日 程", weekChildren, { barColor = kindColor }))
+
+    -- ---- 赛程表：整个赛季 8 场，谁打谁一目了然 ----
+    local rows = Schedule.rows(state)
+    ---@type table[]
+    local schedRows = {}
+    for i = 1, #rows do
+        local r = rows[i]
+        local isCurrent = (r.status == "current")
+
+        ---@type string
+        local resultText
+        ---@type RGBAColor
+        local resultColor
+        if r.status == "done" then
+            resultText = r.win and "胜" or "负"
+            resultColor = r.win and C.success or C.danger
+        elseif isCurrent then
+            resultText = "本周"
+            resultColor = C.primary
+        else
+            resultText = "未打"
+            resultColor = C.textSub
+        end
+
+        schedRows[i] = UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            alignItems = "center",
+            gap = 8,
+            paddingVertical = 6,
+            paddingHorizontal = 8,
+            backgroundColor = isCurrent and C.bgCardLight or C.bgCard,
+            borderWidth = isCurrent and 2 or 0,
+            borderColor = C.primary,
+            children = {
+                UI.Label {
+                    text = string.format("W%02d", r.week),
+                    fontSize = 11,
+                    fontWeight = "bold",
+                    fontColor = C.textSub,
+                    flexShrink = 0,
+                },
+                UI.Label {
+                    text = (r.home and "主  " or "客  ") .. r.opponent,
+                    fontSize = 12,
+                    fontWeight = isCurrent and "bold" or "normal",
+                    fontColor = C.textMain,
+                    flexGrow = 1, flexShrink = 1, flexBasis = 0,
+                    whiteSpace = "normal",
+                },
+                r.status == "done" and UI.Label {
+                    text = string.format("%d 分", r.myPoints),
+                    fontSize = 10,
+                    fontColor = C.textSub,
+                    flexShrink = 0,
+                } or UI.Panel { width = 0 },
+                UI.Label {
+                    text = resultText,
+                    fontSize = 12,
+                    fontWeight = "bold",
+                    fontColor = resultColor,
+                    flexShrink = 0,
+                },
+            },
+        }
+    end
+
+    table.insert(blocks, Common.Block(
+        string.format("本 赛 季 赛 程  (%d 胜 %d 负)", wins, losses),
+        schedRows, { barColor = C.textMain }))
+
+    -- 经营与成长：2×2 网格（此前 4 个按钮挤一行，中文+emoji 在 360dp 屏上易换行/截断）
     local pts = state.attrPoints or 0
+    local BadgesMod = require("Data.Badges")
+    local badgePoints = state.skillPoints or 0
+
+    ---@param text string
+    ---@param bg table
+    ---@param fg table
+    ---@param onClick fun()
+    local function gridButton(text, bg, fg, onClick)
+        return UI.Button {
+            text = text,
+            flexGrow = 1, flexBasis = 0,
+            height = 50,
+            fontSize = 14,
+            fontWeight = "bold",
+            backgroundColor = bg,
+            textColor = fg,
+            borderWidth = 3,
+            borderColor = C.outline,
+            onClick = function()
+                Audio.Play("click")
+                onClick()
+            end,
+        }
+    end
+
+    local WHITE = { 255, 255, 255, 255 }
     table.insert(blocks, Common.Block("经 营 与 成 长", {
         UI.Panel {
             width = "100%",
-            flexDirection = "row",
+            flexDirection = "column",
             gap = 8,
             children = {
-                UI.Button {
-                    text = pts > 0 and string.format("🏋 加点(%d)", pts) or "🏋 加点",
-                    flexGrow = 1, flexBasis = 0,
-                    height = 48,
-                    fontSize = 13,
-                    fontWeight = "bold",
-                    backgroundColor = pts > 0 and C.success or C.bgCardLight,
-                    textColor = pts > 0 and { 255, 255, 255, 255 } or C.textMain,
-                    hoverBackgroundColor = { 82, 188, 108, 255 },
-                    pressedBackgroundColor = { 44, 138, 68, 255 },
-                    borderWidth = 3,
-                    borderColor = C.outline,
-                    onClick = function()
-                        Audio.Play("click")
-                        if onAttr then onAttr() end
-                    end,
+                UI.Panel {
+                    width = "100%",
+                    flexDirection = "row",
+                    gap = 8,
+                    children = {
+                        gridButton(
+                            pts > 0 and string.format("加点 (%d)", pts) or "加点",
+                            pts > 0 and C.success or C.bgCardLight,
+                            pts > 0 and WHITE or C.textMain,
+                            function() if onAttr then onAttr() end end),
+                        gridButton(
+                            badgePoints > 0 and string.format("徽章 (%d)", badgePoints) or "徽章",
+                            badgePoints > 0 and C.primary or C.bgCardLight,
+                            badgePoints > 0 and WHITE or C.textMain,
+                            function() if onBadge then onBadge() end end),
+                    },
                 },
-                UI.Button {
-                    text = "🔄 转会",
-                    flexGrow = 1, flexBasis = 0,
-                    height = 48,
-                    fontSize = 13,
-                    fontWeight = "bold",
-                    backgroundColor = C.secondary,
-                    textColor = { 255, 255, 255, 255 },
-                    hoverBackgroundColor = { 72, 152, 226, 255 },
-                    pressedBackgroundColor = { 28, 96, 168, 255 },
-                    borderWidth = 3,
-                    borderColor = C.outline,
-                    onClick = function()
-                        Audio.Play("click")
-                        if onTransfer then onTransfer() end
-                    end,
+                UI.Panel {
+                    width = "100%",
+                    flexDirection = "row",
+                    gap = 8,
+                    children = {
+                        gridButton("转会", C.secondary, WHITE,
+                            function() if onTransfer then onTransfer() end end),
+                        gridButton(
+                            Career.welfareAvailable() and "福利 !" or "福利",
+                            Career.welfareAvailable() and { 232, 168, 32, 255 } or C.bgCardLight,
+                            Career.welfareAvailable() and { 60, 40, 0, 255 } or C.textMain,
+                            function() if onWelfare then onWelfare() end end),
+                    },
                 },
-                UI.Button {
-                    text = "💰 财务",
-                    flexGrow = 1, flexBasis = 0,
-                    height = 48,
-                    fontSize = 13,
-                    fontWeight = "bold",
-                    backgroundColor = C.bgCardLight,
-                    textColor = C.textMain,
-                    hoverBackgroundColor = { 255, 244, 224, 255 },
-                    pressedBackgroundColor = { 236, 226, 208, 255 },
-                    borderWidth = 3,
-                    borderColor = C.outline,
-                    onClick = function()
-                        Audio.Play("click")
-                        if onFinance then onFinance() end
-                    end,
+                -- 新增玩法入口：阵容（队友/化学反应）与宿敌（恩怨线）
+                UI.Panel {
+                    width = "100%",
+                    flexDirection = "row",
+                    gap = 8,
+                    children = {
+                        gridButton("阵容", C.bgCardLight, C.textMain,
+                            function() if onRoster then onRoster() end end),
+                        gridButton("宿敌", C.bgCardLight, C.textMain,
+                            function() if onRival then onRival() end end),
+                    },
                 },
-                UI.Button {
-                    text = Career.welfareAvailable() and "🎁 福利!" or "🎁 福利",
-                    flexGrow = 1, flexBasis = 0,
-                    height = 48,
-                    fontSize = 13,
-                    fontWeight = "bold",
-                    backgroundColor = Career.welfareAvailable() and { 232, 168, 32, 255 } or C.bgCardLight,
-                    textColor = Career.welfareAvailable() and { 60, 40, 0, 255 } or C.textMain,
-                    hoverBackgroundColor = { 250, 196, 72, 255 },
-                    pressedBackgroundColor = { 196, 138, 16, 255 },
-                    borderWidth = 3,
-                    borderColor = C.outline,
-                    onClick = function()
-                        Audio.Play("click")
-                        if onWelfare then onWelfare() end
-                    end,
-                },
+                -- 全明星周末：可参加时用金色整行高亮，这是一次节日级的玩法
+                allStarReady and gridButton(
+                    "★ 全明星周末（三分大赛 · 扣篮大赛）",
+                    { 232, 168, 32, 255 }, { 60, 40, 0, 255 },
+                    function() if onAllStar then onAllStar() end end) or UI.Panel { height = 0 },
+                -- 一句话摘要：让玩家不点进去也知道队内关系和宿敌战绩
+                (actions.rosterNote or actions.rivalNote) and UI.Panel {
+                    width = "100%",
+                    flexDirection = "column",
+                    gap = 3,
+                    children = {
+                        actions.rosterNote and UI.Label {
+                            text = "队内：" .. tostring(actions.rosterNote),
+                            fontSize = 11, fontColor = C.textSub,
+                            whiteSpace = "normal", lineHeight = 1.35,
+                            flexGrow = 1, flexShrink = 1, flexBasis = 0,
+                        } or UI.Panel { height = 0 },
+                        actions.rivalNote and UI.Label {
+                            text = "宿敌：" .. tostring(actions.rivalNote),
+                            fontSize = 11, fontColor = C.textSub,
+                            whiteSpace = "normal", lineHeight = 1.35,
+                            flexGrow = 1, flexShrink = 1, flexBasis = 0,
+                        } or UI.Panel { height = 0 },
+                    },
+                } or UI.Panel { height = 0 },
             },
         },
     }, { barColor = C.secondary }))
@@ -591,7 +882,9 @@ function ScreenHub.Build(state, actions)
                         fontColor = C.textSub,
                         whiteSpace = "normal",
                         lineHeight = 1.5,
-                        flexShrink = 1,
+                        -- flexGrow + flexBasis=0：让文字撑满剩余宽度。
+                        -- 只用 flexShrink=1 时，在 row 布局下宽度会塌缩成 0，文字不显示（只剩左侧方块）
+                        flexGrow = 1, flexShrink = 1, flexBasis = 0,
                     },
                 },
             }
@@ -614,14 +907,15 @@ function ScreenHub.Build(state, actions)
             borderWidth = 2,
             borderColor = C.outline,
             children = {
-                UI.Label { text = "✓", fontSize = 14, fontWeight = "bold", fontColor = C.success },
+                UI.Label { text = "√", fontSize = 14, fontWeight = "bold", fontColor = C.success },
                 UI.Label {
                     text = actionText,
                     fontSize = 12,
                     fontWeight = "bold",
                     fontColor = C.textMain,
                     whiteSpace = "normal",
-                    flexShrink = 1,
+                    -- 同「大事记」：row 布局下只给 flexShrink 会让宽度塌成 0，文字不显示
+                    flexGrow = 1, flexShrink = 1, flexBasis = 0,
                 },
             },
         })
@@ -634,7 +928,7 @@ function ScreenHub.Build(state, actions)
         gap = 10,
         children = {
             UI.Button {
-                text = "🏀 训 练 馆",
+                text = "训 练 馆",
                 flexGrow = 1, flexBasis = 0,
                 height = 46,
                 fontSize = 14,
@@ -649,7 +943,7 @@ function ScreenHub.Build(state, actions)
                 end,
             },
             UI.Button {
-                text = state.matchMode == "text" and "📺 文字直播" or "🎮 操作比赛",
+                text = state.matchMode == "text" and "文字直播" or "操作比赛",
                 flexGrow = 1, flexBasis = 0,
                 height = 46,
                 fontSize = 14,
@@ -671,12 +965,12 @@ function ScreenHub.Build(state, actions)
         gap = 10,
         children = {
             UI.Button {
-                text = actionText == "" and "本 周 行 动" or "更 换 行 动",
+                text = actionText == "" and "本 周 行 动" or "已 安 排",
                 flexGrow = 1, flexBasis = 0,
                 height = 54,
                 fontSize = 15,
                 fontWeight = "bold",
-                backgroundColor = C.secondary,
+                backgroundColor = actionText == "" and C.secondary or { 150, 140, 126, 255 },
                 textColor = { 255, 255, 255, 255 },
                 borderWidth = 3,
                 borderColor = C.outline,

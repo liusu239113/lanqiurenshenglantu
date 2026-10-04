@@ -2,12 +2,15 @@
   "$schema": "../schemas/resources.schema.json",
 
   "preload_groups": [
-
+    "fonts"
   ],
 
   "groups": {
     "default": [
       "**"
+    ],
+    "fonts": [
+      "Fonts/**"
     ]
   }
 }

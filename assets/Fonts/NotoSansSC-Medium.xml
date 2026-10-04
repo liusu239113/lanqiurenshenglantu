@@ -1,0 +1,5 @@
+<font>
+	<!-- 原先声明了 <fallback name="Fonts/Twemoji.Mozilla.ttf" />，但该字体在引擎/资源里并不存在。
+	     缺字时找不到 fallback 会渲染成乱码方块，所以这里不再声明。
+	     界面文案已保证全部字符都在 NotoSansSC 覆盖范围内（emoji 一律用中文替代）。 -->
+</font>

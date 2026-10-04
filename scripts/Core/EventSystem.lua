@@ -70,6 +70,43 @@ end
 -- 事件抽取
 -- ---------------------------------------------------------------------------
 
+--- 列出指定池中当前可用的事件（不做随机，交给调用方决定选哪张）
+--- 这是「赛季时间线」预排事件的基础：Timeline 在赛季开始时用确定性随机源
+--- 从中挑一张排进某一周，触发时再按 id 找回来。
+---@param state CareerState
+---@param poolName string "pre" | "post" | "daily" | "ms" | "se"
+---@param ctx table|nil 额外判定上下文（不传则按当前状态构造）
+---@param allowCooldown boolean|nil 是否受分类冷却限制
+---@return table[]
+function EventSystem.candidates(state, poolName, ctx, allowCooldown)
+    local pool = Events.POOLS[poolName]
+    if not pool or not state then return {} end
+
+    local context = ctx or makeContext(state)
+    ---@type table[]
+    local out = {}
+    for i = 1, #pool do
+        local ev = pool[i]
+        -- 只触发一次的事件已看过则跳过
+        if not (ev.once and state.seenEvents[ev.id]) and pass(ev, context) then
+            -- 分类冷却（时间戳 = season*100 + week，实现真正的"同类 N 周内不重复"）
+            local cat = ev.cat or "misc"
+            local lastStamp = state.catCooldown[cat]
+            local blocked = false
+            if allowCooldown ~= false and lastStamp ~= nil then
+                local nowStamp = context.season * 100 + (context.week or 1)
+                if nowStamp - lastStamp < CAT_COOLDOWN then
+                    blocked = true
+                end
+            end
+            if not blocked then
+                table.insert(out, ev)
+            end
+        end
+    end
+    return out
+end
+
 --- 从指定池中抽一张可用事件
 ---@param poolName string "pre" | "post" | "daily" | "ms" | "se"
 ---@param state CareerState
@@ -77,32 +114,7 @@ end
 ---@param allowCooldown boolean|nil 是否受分类冷却限制
 ---@return table|nil
 local function draw(poolName, state, ctx, allowCooldown)
-    local pool = Events.POOLS[poolName]
-    if not pool then return nil end
-
-    ---@type table[]
-    local candidates = {}
-    for i = 1, #pool do
-        local ev = pool[i]
-        -- 只触发一次的事件已看过则跳过
-        if ev.once and state.seenEvents[ev.id] then
-            -- 跳过
-        elseif pass(ev, ctx) then
-            -- 分类冷却
-            local cat = ev.cat or "misc"
-            local lastWeek = state.catCooldown[cat]
-            local blocked = false
-            if allowCooldown ~= false and lastWeek ~= nil then
-                if ctx.season == lastWeek then
-                    blocked = true
-                end
-            end
-            if not blocked then
-                table.insert(candidates, ev)
-            end
-        end
-    end
-
+    local candidates = EventSystem.candidates(state, poolName, ctx, allowCooldown)
     if #candidates == 0 then return nil end
     return candidates[math.random(1, #candidates)]
 end
@@ -115,8 +127,8 @@ local function markSeen(state, ev)
         state.seenEvents[ev.id] = true
     end
     local cat = ev.cat or "misc"
-    -- 用赛季*100+周 作为时间戳，实现"同赛季同类冷却"
-    state.catCooldown[cat] = state.season
+    -- 时间戳 = season*100 + week，配合 CAT_COOLDOWN 实现"同类 N 周内不重复"
+    state.catCooldown[cat] = state.season * 100 + (state.week or 1)
 end
 
 -- ---------------------------------------------------------------------------
@@ -181,6 +193,32 @@ function EventSystem.seasonEnd(state)
         markSeen(state, ev)
         EventSystem.current = ev
     end
+    return ev
+end
+
+-- ---------------------------------------------------------------------------
+-- 按赛季时间线触发
+-- ---------------------------------------------------------------------------
+
+--- 触发赛季时间线上预排的事件
+--- 时间线在赛季开始时已定好「这一周发生哪件事」，这里按 id 找回来。
+--- 若该事件此刻条件已不满足（属性/名气变了），退回同池随机抽一张，
+--- 保证玩家在时间线上看到的"这周有事件"不会落空。
+---@param state CareerState
+---@param week number
+---@return table|nil
+function EventSystem.fromTimeline(state, week)
+    local Timeline = require("Core.Timeline")
+    local ev, poolName = Timeline.eventFor(state, week)
+    if not ev then
+        if poolName then
+            -- 预排的事件条件已失效 → 同池兜底
+            ev = draw(poolName, state, makeContext(state))
+        end
+        if not ev then return nil end
+    end
+    markSeen(state, ev)
+    EventSystem.current = ev
     return ev
 end
 
@@ -259,12 +297,37 @@ function EventSystem.choose(state, optionIndex)
         Career.addLog(string.format("%s — %s", ev.title, opt.text))
     end
 
+    if ev.storyChapter then
+        state.storyPaths = state.storyPaths or {}
+        state.storyHistory = state.storyHistory or {}
+        if opt.path then
+            state.storyPaths[opt.path] = (state.storyPaths[opt.path] or 0) + 1
+        end
+        state.storyMemory = opt.memory or ""
+        table.insert(state.storyHistory, {
+            id = ev.id,
+            age = ev.age or state.age,
+            title = ev.title,
+            choice = opt.text,
+            response = opt.response or "",
+        })
+        state.seenEvents[ev.id] = true
+        print(string.format("[Story] %s · %s", ev.title, opt.text))
+    end
+
+    -- 选项可以显式触发退役（如「最后一舞」的"宣布退役"）
+    local retired = false
+    if opt.retire then
+        retired = Career.retire()
+    end
+
     EventSystem.current = nil
 
     return {
         response = opt.response or "",
         parts = parts,
         sfx = "levelup",
+        retired = retired,
     }
 end
 

@@ -304,7 +304,7 @@ end
 ---@field offense number
 ---@field defense number
 ---@field staminaCost number
----@field adLocked boolean|nil 需要看广告解锁（一次性，记在生涯里）
+---@field reqOverall number|nil 解锁所需综合评分（nil = 一开始就能用）
 
 ---@type TacticDef[]
 MiniGame.TACTICS = {
@@ -312,8 +312,9 @@ MiniGame.TACTICS = {
     { id = "balanced", name = "均衡",   desc = "攻守平衡，稳定发挥",     offense = 1.00, defense = 1.00, staminaCost = 1.0 },
     { id = "half",     name = "阵地战", desc = "落阵地，稳扎稳打",       offense = 0.92, defense = 1.15, staminaCost = 0.8 },
     { id = "lockdown", name = "铁血防守", desc = "以防守带动进攻",       offense = 0.85, defense = 1.28, staminaCost = 1.1 },
-    -- 广告解锁的特殊战术：单核拉开的极端打法，风险与收益都拉满
-    { id = "iso",      name = "巨星单打", desc = "全队拉开，把球交给你", offense = 1.32, defense = 0.78, staminaCost = 1.6, adLocked = true },
+    -- 生涯后期解锁的特殊战术：单核拉开的极端打法，风险与收益都拉满。
+    -- 用综合评分做门槛（练出来的），不做成广告付费墙。
+    { id = "iso",      name = "巨星单打", desc = "全队拉开，把球交给你", offense = 1.32, defense = 0.78, staminaCost = 1.6, reqOverall = 70 },
 }
 
 --- 防守策略
@@ -346,77 +347,6 @@ function MiniGame.getDefense(id)
         end
     end
     return assert(MiniGame.DEFENSE[1])
-end
-
--- ============================================================================
--- 斗牛赛（1v1 单挑）—— 把前三种玩法串成一局
--- ============================================================================
-
----@class DuelState
----@field myScore number
----@field oppScore number
----@field targetScore number   先到多少分获胜
----@field round number
----@field phase string         "attack"|"defend"|"shot"|"over"
----@field shot ShotState|nil
----@field dribble DribbleState|nil
----@field defend DefendState|nil
----@field dribbleHistory number[]
----@field log string[]
----@field done boolean
----@field win boolean
-
---- 开始一局斗牛
----@param targetScore number|nil 默认 11 分
----@return DuelState
-function MiniGame.startDuel(targetScore)
-    ---@type DuelState
-    return {
-        myScore = 0,
-        oppScore = 0,
-        targetScore = targetScore or 11,
-        round = 1,
-        phase = "attack",
-        shot = nil,
-        dribble = nil,
-        defend = nil,
-        dribbleHistory = {},
-        log = {},
-        done = false,
-        win = false,
-    }
-end
-
---- 追加一条斗牛日志
----@param d DuelState
----@param text string
-function MiniGame.duelLog(d, text)
-    table.insert(d.log, 1, text)
-    while #d.log > 30 do
-        table.remove(d.log)
-    end
-end
-
---- 检查斗牛是否结束
----@param d DuelState
----@return boolean
-function MiniGame.duelCheckOver(d)
-    if d.done then return true end
-    if d.myScore >= d.targetScore then
-        d.done = true
-        d.win = true
-        d.phase = "over"
-        MiniGame.duelLog(d, "★ 你赢下了这场斗牛！")
-        return true
-    end
-    if d.oppScore >= d.targetScore then
-        d.done = true
-        d.win = false
-        d.phase = "over"
-        MiniGame.duelLog(d, "对手先到分，你输了这局。")
-        return true
-    end
-    return false
 end
 
 return MiniGame

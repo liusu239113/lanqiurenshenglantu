@@ -106,6 +106,7 @@ function ScreenMini.BuildShot(attrs, stamina, shots, difficulty, onFinish)
 
     local resultLabel = UI.Label {
         text = "在绿色区域点击「出手」",
+        width = "100%",
         fontSize = 15,
         fontWeight = "bold",
         fontColor = C.textSub,
@@ -211,9 +212,13 @@ function ScreenMini.BuildShot(attrs, stamina, shots, difficulty, onFinish)
             paddingBottom = 10,
             children = { scoreLabel },
         },
-        UI.Panel {
+        -- 中段用 ScrollView 承载：内容超高时滚动，而不是被 Yoga 压缩后溢出边框。
+        -- justifyContent="center" 让内容不足一屏时垂直居中，超出则正常滚动。
+        UI.ScrollView {
             flexGrow = 1,
             flexBasis = 0,
+            scrollY = true,
+            showScrollbar = true,
             justifyContent = "center",
             padding = 16,
             children = {
@@ -245,6 +250,7 @@ function ScreenMini.BuildShot(attrs, stamina, shots, difficulty, onFinish)
                                     fontSize = 11,
                                     fontColor = C.textSub,
                                     textAlign = "center",
+                                    whiteSpace = "normal",
                                 },
                             },
                         },
@@ -337,9 +343,11 @@ end
 ---@param onFinish fun(success: number, total: number)
 ---@return Panel
 function ScreenMini.BuildDribble(attrs, rounds, difficulty, onFinish)
-    -- 注意：用 minHeight 而非 height，多行文字（含换行）会撑开高度，避免裁切
+    -- 注意：用 minHeight 而非 height，多行文字（含换行）会撑开高度，避免裁切；
+    -- 同时必须给 width = "100%"，否则按不换行的整行宽度测高，卡片高度会算小
     local leanLabel = UI.Label {
         text = "",
+        width = "100%",
         fontSize = 18,
         fontWeight = "bold",
         fontColor = C.textMain,
@@ -417,9 +425,13 @@ function ScreenMini.BuildDribble(attrs, rounds, difficulty, onFinish)
             paddingBottom = 8,
             children = { roundLabel },
         },
-        UI.Panel {
+        -- 中段可滚动：重心提示带换行，压缩后会溢出卡片。
+        -- justifyContent="center" 让内容不足一屏时垂直居中，超出则正常滚动。
+        UI.ScrollView {
             flexGrow = 1,
             flexBasis = 0,
+            scrollY = true,
+            showScrollbar = true,
             justifyContent = "center",
             padding = 16,
             children = {
@@ -437,6 +449,7 @@ function ScreenMini.BuildDribble(attrs, rounds, difficulty, onFinish)
                             fontSize = 12,
                             fontColor = C.textSub,
                             textAlign = "center",
+                            whiteSpace = "normal",
                         },
                         leanLabel,
                     },
@@ -530,9 +543,13 @@ local defendUI_ = nil
 ---@param onFinish fun(success: number, total: number)
 ---@return Panel
 function ScreenMini.BuildDefend(defendAttr, rounds, difficulty, onFinish)
-    -- 注意：用 minHeight 而非 height，避免多行提示被裁切
+    -- 注意两点，否则提示会溢出卡片外框：
+    --   1. 用 minHeight 而非 height，避免多行提示被裁切
+    --   2. 必须给 width = "100%"，否则 Yoga 按「不换行的整行宽度」测量，
+    --      高度算小了 → 卡片高度不足 → 文字画到底框外面
     local tellLabel = UI.Label {
         text = "",
+        width = "100%",
         fontSize = 18,
         fontWeight = "bold",
         fontColor = C.textMain,
@@ -551,6 +568,7 @@ function ScreenMini.BuildDefend(defendAttr, rounds, difficulty, onFinish)
 
     local resultLabel = UI.Label {
         text = "读懂对手的意图",
+        width = "100%",
         fontSize = 14,
         fontWeight = "bold",
         fontColor = C.textSub,
@@ -613,9 +631,13 @@ function ScreenMini.BuildDefend(defendAttr, rounds, difficulty, onFinish)
             paddingHorizontal = 16,
             children = { Common.Title("防 守 读 心", 19), roundLabel },
         },
-        UI.Panel {
+        -- 中段可滚动：长提示文案（2~3 行）不会被压缩后顶出卡片边框。
+        -- justifyContent="center" 让内容不足一屏时仍然垂直居中，超出则正常滚动。
+        UI.ScrollView {
             flexGrow = 1,
             flexBasis = 0,
+            scrollY = true,
+            showScrollbar = true,
             justifyContent = "center",
             padding = 16,
             children = {

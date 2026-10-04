@@ -23,14 +23,50 @@ local INJURY_NAMES = {
     heavy = { "膝盖韧带损伤", "脚部骨折", "跟腱炎" },
 }
 
+--- 重新计算伤病风险（0-100）
+-- 此前 injuryRisk 恒为 30，伤病完全是运气；现在它由体能属性、年龄、疲劳累积共同决定，
+-- 玩家可以通过拉体能、休息、控制连续出战来主动管理它。
+---@param state CareerState
+---@return number
+function Injury.recomputeRisk(state)
+    if not state then return 30 end
+
+    -- 体能属性越高越抗伤（55 为基准线）；含徽章被动加成
+    local athletic = (require("Core.Career").matchAttrs().athletic) or 50
+    local base = 40 - (athletic - 55) * 0.35
+
+    -- 年龄增长
+    if state.age >= 30 then
+        base = base + (state.age - 30) * 1.2
+    end
+
+    -- 疲劳：体能越低风险越高（体能满时不额外加，空时 +25）
+    local stamina = state.stamina or 100
+    base = base + (1 - stamina / 100) * 25
+
+    -- 连续出战累积（每周恢复；打比赛时 +8）
+    base = base + (state.fatigueStreak or 0) * 2.5
+
+    -- 徽章被动：铁人体质降低风险
+    local ok, Badges = pcall(require, "Data.Badges")
+    if ok and Badges then
+        base = base - Badges.bonusOf(state, "athletic") * 1.5
+    end
+
+    if base < 5 then base = 5 end
+    if base > 95 then base = 95 end
+    state.injuryRisk = math.floor(base + 0.5)
+    return state.injuryRisk
+end
+
 --- 判定一次伤病
 --- 在比赛结束后调用
 ---@param state CareerState
 ---@param playedHard boolean 是否全力出战（操作模式 = true）
 ---@return table|nil { name, days, severity }
 function Injury.roll(state, playedHard)
-    -- 伤病风险属性（0-100，越高越容易受伤）
-    local risk = state.injuryRisk or 30
+    -- 动态伤病风险（每次判定前重算，让体能/年龄/疲劳实时生效）
+    local risk = Injury.recomputeRisk(state)
 
     local chance = BASE_CHANCE
     chance = chance + (state.age >= 30 and (state.age - 30) * AGE_BONUS or 0)
@@ -77,6 +113,8 @@ function Injury.apply(state, inj)
     state.injuryName = inj.name
     -- 受伤降低士气
     state.morale = math.max(0, state.morale - (inj.severity == "heavy" and 12 or 6))
+    -- 累计伤病次数（「浴火重生」徽章线）
+    state.injuryCount = (state.injuryCount or 0) + 1
     print(string.format("[Injury] %s，伤停 %d 天", inj.name, inj.days))
 end
 

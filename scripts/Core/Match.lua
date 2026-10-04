@@ -8,50 +8,18 @@ local Config = require("Core.Config")
 local Teams = require("Data.Teams")
 local MiniGame = require("Core.MiniGame")
 local Transfer = require("Core.Transfer")
+local Commentary = require("Data.Commentary")
+local Career = require("Core.Career")
+local Teammates = require("Core.Teammates")
+local Rival = require("Core.Rival")
 
 local Match = {}
 
 -- ---------------------------------------------------------------------------
--- 回合结果文案
+-- 回合结果文案（数据引自 Data/Commentary.lua 的 Commentary.MATCH_RESULT）
 -- ---------------------------------------------------------------------------
 
-local RESULT_TEXT = {
-    shot_perfect = {
-        "空心入网！全场沸腾。",
-        "干拔三分，球应声入网！",
-        "手起刀落，球网只轻轻一颤。",
-    },
-    shot_good = {
-        "打板命中，稳稳拿下。",
-        "上篮打进，身体对抗后把球放进。",
-        "球在筐上弹了一下，还是进了。",
-    },
-    shot_miss = {
-        "出手偏出，篮筐拒绝了你。",
-        "球在篮筐上转了两圈，弹了出来。",
-        "被干扰了，投篮短了。",
-    },
-    dribble_win = {
-        "一个变向晃开防守，直杀篮下！",
-        "重心骗过对手，突破成功！",
-        "连续胯下运球，防守者跟不上节奏。",
-    },
-    dribble_lose = {
-        "球被捅掉了，进攻失误。",
-        "防守者识破了你的意图。",
-        "运球被逼到边线，只能勉强出球。",
-    },
-    defend_win = {
-        "判断精准，直接破坏进攻！",
-        "你提前半步站住了位置。",
-        "读穿了对手的意图，干净利落。",
-    },
-    defend_lose = {
-        "判断错了方向，对手打进。",
-        "被假动作骗开，对手轻松得分。",
-        "慢了一拍，只能看着球进筐。",
-    },
-}
+local RESULT_TEXT = Commentary.MATCH_RESULT
 
 --- 随机取一条文案
 ---@param pool string[]
@@ -68,7 +36,8 @@ end
 ---@class MatchStats
 ---@field made number       命中数
 ---@field attempted number  出手数
----@field steals number     防守成功数
+---@field steals number     抢断数（防守成功且对手非投篮）
+---@field blocks number     盖帽数（防守成功且对手投篮）
 ---@field turnovers number  失误数
 
 ---@class MatchSession
@@ -128,6 +97,10 @@ local function baseScore(s, isMine)
     -- 实力差修正
     local ratio = s.myTeamPower / (s.myTeamPower + s.oppPower)
     local factor = isMine and (0.78 + ratio * 0.44) or (1.22 - ratio * 0.44)
+    -- 士气修正：只作用于我方（队友手感），对手不受影响
+    if isMine then
+        factor = factor * (s.moraleFactor or 1.0)
+    end
     local out = math.floor(v * factor + 0.5)
     if out < 1 then out = 1 end
     return out
@@ -139,16 +112,28 @@ end
 
 --- 开始一场比赛
 ---@param state CareerState
----@param stage StageDef
+---@param stage StageDef|nil 不传则按当前年龄阶段推断（避免调用方遗漏时崩溃）
 ---@return MatchSession
 function Match.start(state, stage)
     local cfg = Config.MATCH
+    -- 兜底：stage 未传时按当前年龄推断，防止 Transfer.teamStrength 索引 nil
+    if not stage then
+        for i = 1, #Config.STAGES do
+            local def = Config.STAGES[i]
+            if state.age >= def.minAge and state.age <= def.maxAge then
+                stage = def
+                break
+            end
+        end
+        stage = stage or Config.STAGES[1]
+    end
 
-    -- 球队实力（含战术加成）
+    -- 球队实力（含徽章被动加成与战术加成）
+    local ma = Career.matchAttrs()
     local overall = 0
     for i = 1, #Config.ATTRS do
         local def = Config.ATTRS[i]
-        overall = overall + (state.attrs[def.key] or 0)
+        overall = overall + (ma[def.key] or 0)
     end
     overall = overall / #Config.ATTRS
 
@@ -162,12 +147,24 @@ function Match.start(state, stage)
 
     -- 球队档次影响队友水平：加盟豪门更容易赢，这也是转会的直接收益
     local myTeamPower = (Transfer.teamStrength(state, stage) + (overall - 40) * 0.55) * tacticOff * tacticDef
-    local oppPower = stage.teamStrength + math.random(-8, 8)
+    -- 队友系统：化学反应 + 羁绊 + 性格特长 → 球队实力加减（约 -9 ~ +12）
+    myTeamPower = myTeamPower + Teammates.teamPowerBonus(state)
 
-    local opponent = Teams.randomOpponent(stage.id)
+    -- 对手来自赛季赛程（季后赛则是当前轮次对手），不再是纯随机
+    local game = Career.getGameThisWeek()
+    local oppStrength = game and game.strength or (stage.teamStrength + math.random(-8, 8))
+    local opponent = game and game.opponent or Teams.randomOpponent(stage.id)
+    -- 宿敌之战：打宿敌所在球队时对手强度上浮，赢了更有分量
+    local oppPower = oppStrength + Rival.matchBoost(state, opponent)
 
     -- 难度随对手强度提升
     local difficulty = 0.85 + (stage.teamStrength / 100) * 0.55
+
+    -- 士气系数：士气 0 → 0.88，士气 100 → 1.12（与文字直播同一公式，保证两模式手感一致）
+    -- 士气同时影响队友背景得分，低士气球队整体会打得更挣扎
+    local moraleFactor = 0.88 + ((state.morale or 50) / 100) * 0.24
+    -- 难度再乘一个反向的士气修正：士气低 → 出手窗口更窄
+    difficulty = difficulty / moraleFactor
 
     ---@type MatchSession
     local s = {
@@ -190,7 +187,7 @@ function Match.start(state, stage)
         oppPower = oppPower,
         log = {},
         highlights = {},
-        stats = { made = 0, attempted = 0, steals = 0, turnovers = 0 },
+        stats = { made = 0, attempted = 0, steals = 0, blocks = 0, turnovers = 0 },
         finished = false,
         win = false,
         flashText = "",
@@ -199,10 +196,15 @@ function Match.start(state, stage)
         myBaseMax = cfg.myBaseMax,
         oppBaseMin = cfg.oppBaseMin,
         oppBaseMax = cfg.oppBaseMax,
+        -- 士气系数：低士气时投篮绿区缩窄、队友得分下降
+        -- （此前操作模式完全不读士气，导致「天选之星」的 -8 士气惩罚毫无代价）
+        moraleFactor = moraleFactor,
     }
 
     Match.session = s
-    Match.addLog(s, string.format("跳球！%s 对阵 %s。", state.team, opponent))
+    -- 主客场写进开场解说：赛程表上标了主/客，比赛里就得能感受到
+    local venue = (game and game.home == false) and "客场" or "主场"
+    Match.addLog(s, string.format("跳球！%s 在%s迎战 %s。", state.team, venue, opponent))
     Match.beginRound(s, state)
 
     print(string.format("[Match] 开始 %s vs %s | 难度 %.2f | 共 %d 回合",
@@ -347,10 +349,19 @@ function Match.resolveDefend(s, state, success, actual)
     local actualName = NAMES[actual] or "进攻"
 
     if success then
-        s.stats.steals = s.stats.steals + 1
-        s.flashText = pick(RESULT_TEXT.defend_win)
-        table.insert(s.highlights, string.format("%s 识破对手的%s，直接破坏进攻！", state.name, actualName))
-        Match.addLog(s, string.format("防守成功，破坏对手的%s。", actualName))
+        -- 区分抢断与盖帽：封住投篮 = 盖帽，其余 = 抢断。
+        -- 此前只有 steals 一项且 blocks 从未累加，导致「防守铁闸」徽章线只统计抢断。
+        if actual == "shoot" then
+            s.stats.blocks = (s.stats.blocks or 0) + 1
+            s.flashText = pick(RESULT_TEXT.defend_win)
+            table.insert(s.highlights, string.format("%s 正面封盖了对手的投篮！", state.name))
+            Match.addLog(s, "防守成功，封盖对手的投篮。")
+        else
+            s.stats.steals = s.stats.steals + 1
+            s.flashText = pick(RESULT_TEXT.defend_win)
+            table.insert(s.highlights, string.format("%s 识破对手的%s，直接破坏进攻！", state.name, actualName))
+            Match.addLog(s, string.format("防守成功，破坏对手的%s。", actualName))
+        end
         -- 防守成功：对手本回合得分减半
         local oppBase = baseScore(s, false)
         Match.endRound(s, state, nil, math.max(1, math.floor(oppBase * 0.45)))
@@ -417,14 +428,42 @@ function Match.finish(state)
     else
         moraleGain = -5
     end
-    state.morale = math.max(0, math.min(100, state.morale + moraleGain))
-    state.fame = math.max(0, state.fame + fameGain)
+    -- 走 Career 入口，让徽章的人气/士气上限与百分比加成生效
+    Career.addMorale(moraleGain)
+    Career.addFame(fameGain)
+    -- 关键球：分差 ≤3 的胜场，记一次（「关键先生」徽章线）
+    if win and (s.myScore - s.oppScore) <= 3 then
+        Career.noteClutchShot()
+    end
 
-    -- 记进结果里：战报页的广告可以再给一份（人气双倍）
+    -- 徽章统计累加（操作模式能拿到抢断/盖帽细分数据）
+    state.totalSteals = (state.totalSteals or 0) + (s.stats.steals or 0)
+    state.totalBlocks = (state.totalBlocks or 0) + (s.stats.blocks or 0)
+    state.totalAssists = (state.totalAssists or 0) + math.floor(s.myPoints / 4)
+    -- 铁人徽章：未受伤完赛
+    if (state.injuryDays or 0) <= 0 then
+        state.cleanGames = (state.cleanGames or 0) + 1
+    end
+    -- 连续出战累积（推高伤病风险，休息/轮空周自动衰减）
+    state.fatigueStreak = (state.fatigueStreak or 0) + 1
+
+    -- 战报展示本场基础收益；可选复盘广告另行奖励经验。
     result.rewardMorale = moraleGain
     result.rewardFame = fameGain
 
     state.lastResult = result
+
+    -- 比赛后检查徽章解锁
+    local CareerMod = require("Core.Career")
+    local Badges = require("Data.Badges")
+    local newBadges = Badges.check(state)
+    for i = 1, #newBadges do
+        local def = Badges.BY_ID[newBadges[i]]
+        if def then
+            CareerMod.addLog(string.format("★ 解锁徽章【%s】：%s", def.name, def.desc))
+        end
+    end
+    result.newBadges = newBadges
 
     print(string.format("[Match] 结束 %s | 我 %d : %d 敌 | 个人 %d 分 | 命中 %d/%d",
         s.opponent, s.myScore, s.oppScore, s.myPoints, s.stats.made, s.stats.attempted))

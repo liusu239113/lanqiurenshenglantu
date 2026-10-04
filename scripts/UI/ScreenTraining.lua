@@ -20,22 +20,27 @@ local C = Config.COLORS
 -- ---------------------------------------------------------------------------
 
 --- 玩法入口卡（大格子，漫画风）
+--- 体能不足时置灰并禁用：训练馆的属性收益需要付出体能代价，
+--- 否则体力见底后反复重开玩法就能无限刷属性。
 ---@param title string
 ---@param desc string
 ---@param color RGBAColor
+---@param cost number 单次体能消耗
+---@param enabled boolean 体能是否够开练
 ---@param onClick fun()
 ---@return Button
-local function ModeCard(title, desc, color, onClick)
+local function ModeCard(title, desc, color, cost, enabled, onClick)
     return UI.Button {
         width = "100%",
         minHeight = 96,
         paddingHorizontal = 18,
         paddingVertical = 14,
-        backgroundColor = color,
-        hoverBackgroundColor = color,
+        backgroundColor = enabled and color or { 168, 162, 152, 255 },
+        hoverBackgroundColor = enabled and color or { 168, 162, 152, 255 },
         pressedBackgroundColor = C.primaryDark,
         borderWidth = 3,
         borderColor = C.outline,
+        disabled = not enabled,
         onClick = function()
             onClick()
         end,
@@ -68,10 +73,19 @@ local function ModeCard(title, desc, color, onClick)
                                 whiteSpace = "normal",
                                 lineHeight = 1.4,
                             },
+                            UI.Label {
+                                text = (not enabled) and string.format("体能不足 · 需要 %d", cost)
+                                    or (cost > 0) and string.format("体能 -%d", cost)
+                                    or "不耗体能",
+                                fontSize = 11,
+                                fontWeight = "bold",
+                                fontColor = enabled and { 255, 255, 255, 200 } or { 255, 226, 226, 255 },
+                                whiteSpace = "normal",
+                            },
                         },
                     },
                     UI.Label {
-                        text = "▶",
+                        text = enabled and "▶" or "✕",
                         fontSize = 22,
                         fontWeight = "bold",
                         fontColor = { 255, 255, 255, 255 },
@@ -104,6 +118,35 @@ function ScreenTraining.Build(onPick, onBack)
         attrRows[i] = Common.AttrRow(def, state.attrs[def.key] or 0)
     end
 
+    -- 体能门槛：每个玩法都要消耗体能，不够的入口直接置灰
+    local stamina = math.floor(state.stamina or 0)
+    local staminaMax = Career.staminaMax()
+    local canShot = Career.canTrain("shot")
+    local canDribble = Career.canTrain("dribble")
+    local canDefend = Career.canTrain("defend")
+
+    ---@type table[]
+    local staminaRow = {
+        -- StatBar 自带 flexBasis=0，直接放进列容器高度会算成 0（条不可见），
+        -- 必须像主页那样包一层 row Panel。
+        UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            children = {
+                Common.StatBar("体 能", stamina, (canShot and canDribble and canDefend) and C.success or C.danger),
+            },
+        },
+    }
+    if not canShot then
+        table.insert(staminaRow, Common.Sub(string.format(
+            "体能不足（%d / %d），训练馆暂时练不了 —— 先回主页安排一次「休息恢复」，或推进一周。",
+            stamina, staminaMax), 12))
+    else
+        table.insert(staminaRow, Common.Sub(string.format(
+            "每次训练消耗体能（投篮 -%d，突破 -%d，防守 -%d），体能见底就无法再练。",
+            Config.TRAINING.costShot, Config.TRAINING.costDribble, Config.TRAINING.costDefend), 12))
+    end
+
     return Common.Screen(Config.ART.bgTraining, {
         -- 顶栏（返回键在左上角）
         Common.TopBar("训 练 馆", function()
@@ -126,49 +169,28 @@ function ScreenTraining.Build(onPick, onBack)
                     children = {
                         Common.Sub("属性越强，操作容错越高。在这里磨练你的手感。", 13),
 
-                        ModeCard("投 篮 训 练", "时机条出手，绿区命中率由【得分】决定", C.primary, function()
-                            Audio.Play("click")
-                            onPick("shot")
-                        end),
-                        ModeCard("一 对 一 突 破", "读重心变向，AI 会记住你的习惯", C.secondary, function()
-                            Audio.Play("click")
-                            onPick("dribble")
-                        end),
-                        ModeCard("防 守 读 心", "预判对手动向，属性越高提示越准", { 138, 118, 96, 255 }, function()
-                            Audio.Play("click")
-                            onPick("defend")
-                        end),
-                        ModeCard("斗 牛 赛", "1v1 单挑，先到 11 分获胜", { 168, 62, 148, 255 }, function()
-                            Audio.Play("click")
-                            onPick("duel")
-                        end),
-                        ModeCard("战 术 板", "布置攻防打法，影响比赛走势", { 62, 138, 96, 255 }, function()
-                            Audio.Play("click")
-                            onPick("tactic")
-                        end),
+                        Common.Block("体 能 状 态", staminaRow, { barColor = C.success }),
 
-                        -- 训练收益放大器（本页唯一的广告位，叙事包装：随队体能师）
-                        state.boostActive and UI.Panel {
-                            width = "100%",
-                            padding = 12,
-                            backgroundColor = { 232, 246, 232, 255 },
-                            borderWidth = 3,
-                            borderColor = C.outline,
-                            children = {
-                                UI.Label {
-                                    text = string.format("✓ 体能师随队中：训练收益 +%d%%（本季有效）",
-                                        math.floor((Config.AD_REWARDS.boostMultiplier - 1) * 100)),
-                                    fontSize = 13,
-                                    fontWeight = "bold",
-                                    fontColor = C.success,
-                                    textAlign = "center",
-                                    whiteSpace = "normal",
-                                },
-                            },
-                        } or AdWidgets.Card(state, "boost", function()
-                            state.boostActive = true
-                            return "体能师已随队，本季训练收益大幅提升"
-                        end),
+                        ModeCard("投 篮 训 练", "时机条出手，绿区命中率由【得分】决定",
+                            C.primary, Config.TRAINING.costShot, canShot, function()
+                                Audio.Play("click")
+                                onPick("shot")
+                            end),
+                        ModeCard("一 对 一 突 破", "读重心变向，AI 会记住你的习惯",
+                            C.secondary, Config.TRAINING.costDribble, canDribble, function()
+                                Audio.Play("click")
+                                onPick("dribble")
+                            end),
+                        ModeCard("防 守 读 心", "预判对手动向，属性越高提示越准",
+                            { 138, 118, 96, 255 }, Config.TRAINING.costDefend, canDefend, function()
+                                Audio.Play("click")
+                                onPick("defend")
+                            end),
+                        ModeCard("战 术 板", "布置攻防打法，影响比赛走势（不耗体能）",
+                            { 62, 138, 96, 255 }, 0, true, function()
+                                Audio.Play("click")
+                                onPick("tactic")
+                            end),
 
                         -- 属性面板
                         Common.Block("当 前 能 力", attrRows, { barColor = C.textMain }),
@@ -196,6 +218,14 @@ function ScreenTraining.BuildTactic(onConfirm, onBack)
 
     local selTactic = state.tacticId or "balanced"
     local selDefense = state.defenseId or "man"
+    local ov = Career.getOverall()
+
+    --- 战术通过综合评分或完整观看广告解锁。
+    ---@param t TacticDef
+    ---@return boolean
+    local function tacticUnlocked(t)
+        return t.reqOverall == nil or ov >= t.reqOverall or Career.hasTactic(t.id)
+    end
 
     ---@type table[]
     local tacticButtons = {}
@@ -206,10 +236,9 @@ function ScreenTraining.BuildTactic(onConfirm, onBack)
         for i = 1, #tacticButtons do
             local t = MiniGame.TACTICS[i]
             local btn = tacticButtons[i]
-            local locked = (t.adLocked == true) and not Career.hasTactic(t.id)
             if t.id == selTactic then
                 btn:SetStyle({ backgroundColor = C.primary })
-            elseif locked then
+            elseif not tacticUnlocked(t) then
                 btn:SetStyle({ backgroundColor = { 238, 232, 220, 255 } })
             else
                 btn:SetStyle({ backgroundColor = C.bgCard })
@@ -232,7 +261,7 @@ function ScreenTraining.BuildTactic(onConfirm, onBack)
     for i = 1, #MiniGame.TACTICS do
         local t = MiniGame.TACTICS[i]
         local id = t.id
-        local locked = (t.adLocked == true) and not Career.hasTactic(id)
+        local locked = not tacticUnlocked(t)
         tacticButtons[i] = UI.Button {
             width = "100%",
             height = 64,
@@ -264,7 +293,8 @@ function ScreenTraining.BuildTactic(onConfirm, onBack)
                                     gap = 6,
                                     children = {
                                         UI.Label { text = t.name, fontSize = 16, fontWeight = "bold", fontColor = C.textMain },
-                                        locked and Common.Tag("需解锁", { 232, 168, 32, 255 }) or UI.Panel { width = 0 },
+                                        locked and Common.Tag(string.format("综合 %d 解锁", t.reqOverall or 0),
+                                            { 232, 168, 32, 255 }) or UI.Panel { width = 0 },
                                     },
                                 },
                                 UI.Label { text = t.desc, fontSize = 11, fontColor = C.textSub },
@@ -340,7 +370,16 @@ function ScreenTraining.BuildTactic(onConfirm, onBack)
     refreshTactics()
     refreshDefense()
 
-    return Common.Screen(Config.ART.bgLocker, {
+    local bonusTactic = MiniGame.getTactic("iso")
+    local tacticAd = (not tacticUnlocked(bonusTactic)) and AdWidgets.Button(state, "tactic", function()
+        Career.unlockTactic("iso")
+        return "永久解锁巨星单打，下一场即可布置"
+    end, {
+        label = "▶ 看广告 · 提前永久解锁巨星单打（进攻 ×1.32）",
+        onFinished = function() UI.SetRoot(ScreenTraining.BuildTactic(onConfirm, onBack)) end,
+    }) or UI.Panel { height = 0 }
+
+    return Common.Screen(Config.ART.bgTacticsRoom, {
         Common.TopBar("战 术 板", function()
             Audio.Play("click")
             onBack()
@@ -360,22 +399,7 @@ function ScreenTraining.BuildTactic(onConfirm, onBack)
                     paddingBottom = 28,
                     children = {
                         Common.Block("进 攻 战 术", tacticButtons, { barColor = C.primary }),
-
-                        -- 本页唯一的广告位：解锁特殊战术（永久）
-                        (not Career.hasTactic("iso")) and Common.Block("秘 密 战 术", {
-                            Common.Sub("助教手里还留着一套没写进战术板的东西。", 11),
-                            AdWidgets.Button(Career.state, "tactic", function()
-                                Career.unlockTactic("iso")
-                                Career.save()
-                                return "已解锁战术「巨星单打」，永久可用"
-                            end, {
-                                height = 50,
-                                fontSize = 14,
-                                onFinished = function()
-                                    UI.SetRoot(ScreenTraining.BuildTactic(onConfirm, onBack))
-                                end,
-                            }),
-                        }, { barColor = { 232, 168, 32, 255 } }) or UI.Panel { height = 0 },
+                        tacticAd,
                         Common.Block("防 守 策 略", defenseButtons, { barColor = C.secondary }),
                     },
                 },
@@ -398,12 +422,12 @@ end
 -- 玩法结算界面
 -- ---------------------------------------------------------------------------
 
---- 构建玩法结算界面
+--- 构建玩法结算界面（可自愿看广告额外领取一次正收益）
 ---@param title string
 ---@param lines string[]
 ---@param reward string
 ---@param onDone fun()
----@param onDouble fun(): string|nil 看广告再拿一份奖励（返回提示文案），nil 则不显示该入口
+---@param onDouble fun()|nil 完整观看激励视频后再次发放本次正向奖励
 ---@return Panel
 function ScreenTraining.BuildResult(title, lines, reward, onDone, onDouble)
     ---@type table[]
@@ -420,9 +444,13 @@ function ScreenTraining.BuildResult(title, lines, reward, onDone, onDouble)
     end
 
     return Common.Screen(Config.ART.evTrophy, {
-        UI.Panel {
+        -- 结算内容用 ScrollView 承载：奖励明细行数不定，内容超高时滚动，
+        -- 而不是被 Yoga 压缩后把文字顶出卡片边框（截图里看到的溢出）
+        UI.ScrollView {
             flexGrow = 1,
             flexBasis = 0,
+            scrollY = true,
+            showScrollbar = true,
             justifyContent = "center",
             padding = 20,
             children = {
@@ -442,6 +470,7 @@ function ScreenTraining.BuildResult(title, lines, reward, onDone, onDouble)
                             padding = 18,
                             children = {
                                 UI.Panel {
+                                    width = "100%",
                                     flexDirection = "column",
                                     gap = 8,
                                     children = lineWidgets,
@@ -463,9 +492,15 @@ function ScreenTraining.BuildResult(title, lines, reward, onDone, onDouble)
                                         },
                                     },
                                 },
-                                -- 本页唯一的广告位：立刻再拿一份收益
-                                onDouble and AdWidgets.Button(Career.state, "doubleReward", onDouble,
-                                    { height = 50, fontSize = 14 }) or UI.Panel { height = 0 },
+                                onDouble and AdWidgets.Button(Career.state, "doubleReward", function()
+                                    onDouble()
+                                    return "教练加练完成，本次训练正向奖励再领一份"
+                                end, {
+                                    label = "▶ 看广告 · 本次训练正向奖励再领一份",
+                                    onFinished = function()
+                                        UI.SetRoot(ScreenTraining.BuildResult(title, lines, reward, onDone, nil))
+                                    end,
+                                }) or UI.Panel { height = 0 },
                                 Common.PrimaryButton("继 续", function()
                                     Audio.Play("click")
                                     onDone()

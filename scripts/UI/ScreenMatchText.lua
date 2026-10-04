@@ -57,19 +57,11 @@ local AUTO_INTERVAL = 0.8
 ---@type TextUI|nil
 local ui_ = nil
 
---- 按分钟推算当前比分
+--- 按分钟推算当前比分（口径统一在 MatchText.scoreAt，避免与决策卡上的比分打架）
 ---@param minute number
 ---@return number, number
 local function scoreAt(minute)
-    local s = MatchText.session
-    if not s then return 0, 0 end
-    local my, opp = 0, 0
-    local q = math.floor(minute / 12)
-    for i = 1, q do
-        my = my + (s.myQuarters[i] or 0)
-        opp = opp + (s.oppQuarters[i] or 0)
-    end
-    return my, opp
+    return MatchText.scoreAt(minute)
 end
 
 --- 追加一条解说
@@ -149,9 +141,16 @@ local function showDecision(dec)
                 L.decisionHolder:ClearChildren()
 
                 appendLine(res.text, res.success and "highlight" or "normal", dec.minute)
+
+                -- 决策已经改写了本节比分，记分牌直接按权威口径重算。
+                -- 此前这里只给自己加 res.points，对手的得分（以及防守成功
+                -- 带来的扣分）完全没反映到记分牌上。
+                local my, opp = scoreAt(dec.minute)
+                L.myScoreLabel:SetText(tostring(my))
+                L.oppScoreLabel:SetText(tostring(opp))
+
                 if res.success then
                     Audio.Play("swish")
-                    L.myScoreLabel:SetText(tostring((tonumber(L.myScoreLabel:GetText()) or 0) + res.points))
                 else
                     Audio.Play("rim")
                 end
@@ -221,14 +220,13 @@ step = function()
         return
     end
 
-    -- 更新时间与比分
+    -- 更新时间与比分（比分只以 MatchText.scoreAt 为准，不做单向递增判断 ——
+    -- 防守决策会扣掉对手的分，记分牌必须跟着降下来）
     if entry.minute then
         L.minuteLabel:SetText(string.format("%d'", entry.minute))
         local my, opp = scoreAt(entry.minute)
-        local curMy = tonumber(L.myScoreLabel:GetText()) or 0
-        local curOpp = tonumber(L.oppScoreLabel:GetText()) or 0
-        if my > curMy then L.myScoreLabel:SetText(tostring(my)) end
-        if opp > curOpp then L.oppScoreLabel:SetText(tostring(opp)) end
+        L.myScoreLabel:SetText(tostring(my))
+        L.oppScoreLabel:SetText(tostring(opp))
     end
 
     -- 决策点：停下等玩家
@@ -387,7 +385,7 @@ function ScreenMatchText.Build(state, onFinish)
         },
     }
 
-    local root = Common.Screen(Career.getStage().bg, {
+    local root = Common.Screen(Config.ART.bgMatch, {
         scoreboard,
         feedScroll,
         UI.Panel {

@@ -54,17 +54,40 @@ local Career = {}
 ---@field endorsements table[]    代言合约 { name, pay, seasons }
 ---@field adUsage table          广告配额记录
 ---@field matchMode string       "live"（操作比赛）| "text"（文字直播）
----@field boostActive boolean    训练经验加成是否生效
+---@field focusCharges number    剩余「全神贯注」次数（>0 时训练必定拿满档收益）
+---@field actionDoublePending boolean 下次周训练的私人教练加练奖励（存档）
+---@field actionDoneKey string    已完成周行动的赛季/周标识，防止读档重复结算
+---@field pickTeamCredit boolean 已观看定向转会广告但尚未签约的权益
 ---@field originId string         星途出身 id
 ---@field attrPoints number       自由属性点（广告/经验兑换获得）
 ---@field talentCards string[]    建角时选中的天赋卡 id
 ---@field tactics string[]        已解锁的广告战术 id
 ---@field welfareDay string        球队福利所属的"今天"（懒重置用）
----@field welfareClaims number     今天已免费领过几份
+---@field welfareClaims number     今天已观看广告领取的份数
 ---@field teamTier number         当前球队档次 1-3（影响球队强度与年薪）
 ---@field transferSeason number   转会问价次数所属赛季（懒重置用）
 ---@field transferUsed number     本赛季已用掉的问价次数
 ---@field transferOffers string[] 经纪人当前带来的报价（沿用上一次问价结果）
+--- 徽章系统统计
+---@field badges table<string, number> 已解锁徽章 id -> 等级
+---@field totalAssists number     生涯累计助攻
+---@field totalSteals number      生涯累计抢断
+---@field totalBlocks number      生涯累计盖帽
+---@field cleanGames number       未受伤完赛的场次（铁人徽章）
+---@field iqSessions number       累计录像分析次数
+---@field teammates table[]       队友关系
+---@field storyMemory string       上一章留下的叙事回响
+---@field storyPaths table<string, number> 不同人生选择的累计倾向
+---@field storyHistory table[]     已完成的人生章节 { age, title, choice, response }
+---@field postStoryDone boolean    退役后人生已走到终章
+--- 扩充系统统计（徽章进度用）
+---@field expTotal number         生涯累计获得的经验（只增不减，区别于可消费的 expPool）
+---@field injuryCount number      生涯累计受伤次数
+---@field clutchShots number      生涯关键球命中次数（分差 ≤3 的胜场）
+--- 扩充玩法系统
+---@field rival table|nil         宿敌数据（Core.Rival 维护）
+---@field roster table|nil        队友阵容（Core.Teammates 维护）
+---@field allStar table|nil       全明星赛季数据（Core.AllStar 维护）
 
 ---@type CareerState|nil
 Career.state = nil
@@ -97,16 +120,49 @@ local function growthMul(age)
     return 0.25
 end
 
---- 属性总和
+--- 属性总和（含徽章被动加成）
 ---@param attrs table<string, number>
 ---@return number
 function Career.attrTotal(attrs)
     local sum = 0
+    local Badges = require("Data.Badges")
+    local bonus = Career.state and Badges.totalBonus(Career.state) or {}
     for i = 1, #Config.ATTRS do
         local def = Config.ATTRS[i]
-        sum = sum + (attrs[def.key] or 0)
+        sum = sum + (attrs[def.key] or 0) + (bonus[def.key] or 0)
     end
     return sum
+end
+
+--- 取单项属性的有效值（基础 + 徽章加成），用于展示与判定
+---@param key string
+---@return number
+function Career.effectiveAttr(key)
+    local s = Career.state
+    if not s then return 0 end
+    local Badges = require("Data.Badges")
+    return (s.attrs[key] or 0) + Badges.bonusOf(s, key)
+end
+
+--- 比赛用属性（基础属性 + 徽章被动加成）
+--- Match / MatchText / Injury 一律走这张派生表：
+--- 此前它们直接读 state.attrs，导致"徽章加了属性但比赛里毫无感觉"。
+---@return table<string, number>
+function Career.matchAttrs()
+    local s = Career.state
+    ---@type table<string, number>
+    local out = {}
+    if not s then return out end
+    local bonus = {}
+    if s.badges then
+        local Badges = require("Data.Badges")
+        bonus = Badges.totalBonus(s)
+    end
+    for i = 1, #Config.ATTRS do
+        local key = Config.ATTRS[i].key
+        out[key] = (s.attrs[key] or 0) + (bonus[key] or 0)
+    end
+    return out
 end
 
 --- 属性平均值
@@ -250,7 +306,10 @@ function Career.createPlayer(name, positionId, hometown, originId, talentIds)
         endorsements = {},
         adUsage = { day = "", heal = 0 },
         matchMode = "live",
-        boostActive = false,
+        focusCharges = 0,
+        actionDoublePending = false,
+        actionDoneKey = "",
+        pickTeamCredit = false,
         tacticId = nil,
         defenseId = nil,
         -- 球队与转会
@@ -265,6 +324,29 @@ function Career.createPlayer(name, positionId, hometown, originId, talentIds)
         originId = origin.id,
         attrPoints = 0,
         talentCards = {},
+        -- 赛季赛程与季后赛
+        schedule = nil,
+        scheduleSeason = 0,
+        playoff = nil,
+        playoffResult = nil,
+        -- 赛季时间线（剧情事件的预排表，见 Core/Timeline.lua）
+        timeline = nil,
+        timelineSeason = 0,
+        endorseTier = 0,
+        -- 徽章系统
+        badges = {},
+        totalAssists = 0,
+        totalSteals = 0,
+        totalBlocks = 0,
+        cleanGames = 0,
+        iqSessions = 0,
+        fatigueStreak = 0,   -- 连续出战周数（推高伤病风险，休息可清零）
+        -- 队友关系
+        teammates = {},
+        storyMemory = "",
+        storyPaths = {},
+        storyHistory = {},
+        postStoryDone = false,
     }
 
     -- 初始潜力上限：各项 99（广告可突破）
@@ -378,7 +460,7 @@ function Career.refreshTeam()
     end
     s.teamTier = tier
     s.team = Teams.makeTeamName(stage.id, s.hometown, tier, stage.teamPrefix)
-    -- 转会报价属于上一阶段的球队池，晋级后作废
+    -- 转会报价属于上一阶段的球队池，晋级后作废；已购买的定向机会保留。
     s.transferOffers = {}
     s.transferSeason = 0
     s.transferUsed = 0
@@ -426,11 +508,16 @@ function Career.addPotential(key, step)
 end
 
 --- 增加经验池
+--- expTotal 记录「生涯累计获得」（只增不减），用于徽章进度；
+--- expPool 是「可消费余额」，兑换属性点会扣减。两者必须分开，否则徽章会掉级。
 ---@param amount number
 function Career.addExp(amount)
     local s = Career.state
     if not s then return end
     s.expPool = (s.expPool or 0) + amount
+    if amount > 0 then
+        s.expTotal = (s.expTotal or 0) + amount
+    end
 end
 
 --- 用经验池兑换自由属性点（原生路径，不依赖广告）
@@ -459,6 +546,17 @@ function Career.buyAttrPointWithMoney()
     s.money = s.money - cost
     s.attrPoints = (s.attrPoints or 0) + 1
     return true, string.format("自费特训完成，属性点 +1（-%d 万）", cost)
+end
+
+--- 发放「全神贯注」次数（广告奖励）：接下来这几次训练必定拿满档收益
+---@param amount number
+---@return string 提示文案
+function Career.grantFocus(amount)
+    local s = Career.state
+    if not s then return "" end
+    s.focusCharges = (s.focusCharges or 0) + amount
+    return string.format("专注状态已就位：接下来 %d 次训练必定拿满档（现有 %d 次）",
+        amount, s.focusCharges)
 end
 
 --- 增加自由属性点
@@ -515,7 +613,7 @@ function Career.unlockTactic(id)
 end
 
 -- ============================================================================
--- 球队福利（每周免费一份，广告可以多领一份）
+-- 球队福利（每周限一份，由 UI 的激励广告成功回调领取）
 -- ============================================================================
 
 --- 本周的日期键（与广告日配额同一套口径）
@@ -525,7 +623,7 @@ local function welfareKey(s)
     return string.format("%d-%d-%d", s.season, s.week, s.age)
 end
 
---- 本周的球队福利是否还能免费领
+--- 本周的球队福利是否还能领取
 ---@return boolean
 function Career.welfareAvailable()
     local s = Career.state
@@ -534,7 +632,7 @@ function Career.welfareAvailable()
     return (s.welfareClaims or 0) < 1
 end
 
---- 免费领取本周球队福利；已经领过则返回 nil
+--- 领取本周球队福利；已经领过则返回 nil。只由激励广告成功回调调用。
 ---@return string|nil
 function Career.claimWelfare()
     local s = Career.state
@@ -553,18 +651,6 @@ function Career.claimWelfare()
     Career.addExp(exp)
     Career.addMorale(morale)
     return string.format("领到本周福利：经验 +%d，士气 +%d", exp, morale)
-end
-
---- 额外发一份球队福利（广告用），返回提示文案
----@return string
-function Career.grantExtraWelfare()
-    local s = Career.state
-    if not s then return "" end
-    local exp = Config.ECONOMY.welfareExp
-    local morale = Config.ECONOMY.welfareMorale
-    Career.addExp(exp)
-    Career.addMorale(morale)
-    return string.format("又多领一份：经验 +%d，士气 +%d", exp, morale)
 end
 
 --- 突破当前最高一项能力的潜力上限（赛季特训营奖励）
@@ -635,6 +721,51 @@ function Career.endorsementIncome()
     return total
 end
 
+--- 计算某档代言的实际年薪（含出身 perk 加成，如「天选之星」代言收入 +25%）
+---@param tier table 代言档位定义
+---@param fame number 当前人气
+---@return number
+function Career.calcEndorsePay(tier, fame)
+    local pay = tier.payBase + fame * Config.ECONOMY.endorsePayPerFame
+    local perk = Career.getPerk()
+    if perk and perk.endorsePayMul then
+        pay = pay * perk.endorsePayMul
+    end
+    return math.floor(pay)
+end
+
+--- 当前出身的独特机制（无则返回 nil）
+---@return table|nil
+function Career.getPerk()
+    local s = Career.state
+    if not s then return nil end
+    local origin = Career.getOriginDef(s.originId)
+    return origin and origin.perk or nil
+end
+
+--- 代言人气门槛（受出身 perk 影响，如「天选之星」自带流量 → 门槛减半）
+---@return number
+function Career.endorseFameGate()
+    local gate = Config.ECONOMY.endorseFameGate
+    local perk = Career.getPerk()
+    if perk and perk.endorseGateMul then
+        gate = math.floor(gate * perk.endorseGateMul)
+    end
+    return gate
+end
+
+--- 当前人气对应的代言档位（1 起；低于门槛返回 0）
+---@param fame number
+---@return number
+function Career.endorseTierOf(fame)
+    local tiers = Config.ECONOMY.endorseTiers or {}
+    local idx = 0
+    for i = 1, #tiers do
+        if fame >= tiers[i].fame then idx = i end
+    end
+    return idx
+end
+
 --- 代言合约推进一赛季（年数 -1，到期移除）
 ---@return string[] 到期提示
 function Career.advanceEndorsements()
@@ -656,12 +787,70 @@ function Career.advanceEndorsements()
     return out
 end
 
+--- 徽章被动加成查询（懒加载 Badges，避免 require 循环）
+---@param key string
+---@return number
+local function badgeBonus(key)
+    local s = Career.state
+    if not s then return 0 end
+    local Badges = require("Data.Badges")
+    return Badges.bonusOf(s, key)
+end
+
+--- 体能上限（徽章「不朽之躯」等可抬高）
+---@return number
+function Career.staminaMax()
+    return 100 + badgeBonus("staminaMax")
+end
+
+--- 士气上限（徽章「冠军之心」等可抬高）
+---@return number
+function Career.moraleMax()
+    return 100 + badgeBonus("moraleMax")
+end
+
 --- 增减体能
 ---@param delta number
 function Career.addStamina(delta)
     local s = Career.state
     if not s then return end
-    s.stamina = clamp(s.stamina + delta, 0, 100)
+    s.stamina = clamp(s.stamina + delta, 0, Career.staminaMax())
+end
+
+--- 训练馆体能门槛
+---@return number
+function Career.trainingMinStamina()
+    return Config.TRAINING.minStamina or 10
+end
+
+--- 某玩法开练所需的体能消耗
+---@param mode string "shot" | "dribble" | "defend"
+---@return number
+function Career.trainingCost(mode)
+    local T = Config.TRAINING
+    if mode == "shot" then return T.costShot or 12 end
+    if mode == "dribble" then return T.costDribble or 14 end
+    if mode == "defend" then return T.costDefend or 14 end
+    return 0
+end
+
+--- 当前体能是否够开练（第二个返回值是体能不足时的提示文案）
+---@param mode string
+---@return boolean
+---@return string
+function Career.canTrain(mode)
+    local s = Career.state
+    if not s then return false, "无生涯数据" end
+    local minStamina = Career.trainingMinStamina()
+    local cost = Career.trainingCost(mode)
+    local now = math.floor(s.stamina or 0)
+    if now < minStamina then
+        return false, string.format("体能不足（当前 %d），先安排一次「休息恢复」再来训练馆。", now)
+    end
+    if cost > 0 and now < cost then
+        return false, string.format("体能不够完成这次训练（需要 %d，当前 %d），先休息一下。", cost, now)
+    end
+    return true, ""
 end
 
 --- 增减士气
@@ -669,23 +858,45 @@ end
 function Career.addMorale(delta)
     local s = Career.state
     if not s then return end
-    s.morale = clamp(s.morale + delta, 0, 100)
+    s.morale = clamp(s.morale + delta, 0, Career.moraleMax())
 end
 
---- 增减人气
+--- 增减人气（徽章「时代符号」等可按百分比放大正向收益）
 ---@param delta number
 function Career.addFame(delta)
     local s = Career.state
     if not s then return end
-    s.fame = math.max(0, s.fame + delta)
+    local real = delta
+    if delta > 0 then
+        real = delta + math.floor(delta * badgeBonus("fameGain") / 100)
+    end
+    s.fame = math.max(0, s.fame + real)
 end
 
---- 增减金钱
+--- 增减金钱（徽章「商业帝国」等可按百分比放大正向收益）
 ---@param delta number
 function Career.addMoney(delta)
     local s = Career.state
     if not s then return end
-    s.money = math.max(0, s.money + delta)
+    local real = delta
+    if delta > 0 then
+        real = delta + math.floor(delta * badgeBonus("moneyGain") / 100)
+    end
+    s.money = math.max(0, s.money + real)
+end
+
+--- 记录一次关键球命中（末节/终场分差 ≤3 的胜场），供「关键先生」徽章线使用
+function Career.noteClutchShot()
+    local s = Career.state
+    if not s then return end
+    s.clutchShots = (s.clutchShots or 0) + 1
+end
+
+--- 记录一次受伤，供「浴火重生」徽章线使用
+function Career.noteInjury()
+    local s = Career.state
+    if not s then return end
+    s.injuryCount = (s.injuryCount or 0) + 1
 end
 
 -- ============================================================================
@@ -711,15 +922,29 @@ function Career.applyAction(actionId, extraMul)
     local parts = {}
     local mul = growthMul(s.age) * extra
 
-    -- 训练经验加成（训练馆广告奖励的「体能师」效果）
-    if s.boostActive then
-        mul = mul * Config.AD_REWARDS.boostMultiplier
-    end
-
     -- 伤病期间训练效果减半
     if (s.injuryDays or 0) > 0 then
         mul = mul * 0.5
         table.insert(parts, "（伤病中，训练效果减半）")
+    end
+
+    -- 低士气真实拖慢成长：士气越低乘算越低（30 以下开始吃惩罚，0 时打 lowMoraleMul 折）
+    local moraleLine = Config.CAREER.lowMoraleLine or 30
+    local moraleMul = 1.0
+    if s.morale < moraleLine then
+        local floorMul = Config.CAREER.lowMoraleMul or 0.75
+        moraleMul = floorMul + (1.0 - floorMul) * (s.morale / moraleLine)
+        mul = mul * moraleMul
+    end
+
+    -- 全神贯注（广告）：把本次训练的随机性整个买断 —— 取满档收益且不吃高龄衰退
+    -- 注意只对训练生效（rest / media 没有属性收益，不能白扣次数）
+    local focused = false
+    if (s.focusCharges or 0) > 0 and next(gain) ~= nil then
+        focused = true
+        s.focusCharges = s.focusCharges - 1
+        -- 满档 = 无视年龄衰退、士气低落、伤病减半这三层折扣
+        mul = 1.0 * extra
     end
 
     -- 属性收益（受年龄成长系数影响）
@@ -727,22 +952,30 @@ function Career.applyAction(actionId, extraMul)
         local def = Config.ATTRS[i]
         local g = gain[def.key]
         if g then
-            local delta = g * mul
-            local lo = math.floor(delta)
-            local frac = delta - lo
-            local add = lo + (math.random() < frac and 1 or 0)
-            if add < 1 then add = 1 end
-            -- 高龄衰退风险
-            if s.age >= 31 and math.random() < 0.25 then
-                add = 0
-            end
-            if add > 0 then
-                local real = Career.addAttr(def.key, add)
-                if real > 0 then
-                    table.insert(parts, string.format("%s +%d", def.name, real))
+            local add
+            if focused then
+                -- 必定满额，不做取整抖动
+                add = math.floor(g * mul + 0.5)
+            else
+                local delta = g * mul
+                local lo = math.floor(delta)
+                local frac = delta - lo
+                add = lo + (math.random() < frac and 1 or 0)
+                -- 高龄衰退风险
+                if s.age >= 31 and math.random() < 0.25 then
+                    add = 0
                 end
             end
+            if add < 1 then add = 1 end
+            local real = Career.addAttr(def.key, add)
+            if real > 0 then
+                table.insert(parts, string.format("%s +%d", def.name, real))
+            end
         end
+    end
+
+    if focused then
+        table.insert(parts, string.format("（全神贯注 · 剩余 %d 次）", s.focusCharges))
     end
 
     -- 休息：额外恢复士气
@@ -768,9 +1001,25 @@ function Career.applyAction(actionId, extraMul)
         table.insert(parts, string.format("经验 +%d", exp))
     end
 
-    -- 低士气拖慢成长
-    if s.morale < 30 then
-        table.insert(parts, "（士气低落，状态不佳）")
+    -- 录像分析计数（录像狂人徽章的进度来源）
+    if actionId == "train_iq" then
+        s.iqSessions = (s.iqSessions or 0) + 1
+    end
+
+    -- 行动后检查徽章解锁
+    local Badges = require("Data.Badges")
+    local newBadges = Badges.check(s)
+    for i = 1, #newBadges do
+        local def = Badges.BY_ID[newBadges[i]]
+        if def then
+            table.insert(parts, string.format("★ 解锁徽章【%s】", def.name))
+            Career.addLog(string.format("★ 解锁徽章【%s】：%s", def.name, def.desc))
+        end
+    end
+
+    -- 低士气提示（惩罚已在上面乘算进 mul）
+    if s.morale < moraleLine then
+        table.insert(parts, string.format("（士气低落，训练效率 ×%.2f）", moraleMul))
     end
 
     if #parts == 0 then
@@ -783,15 +1032,50 @@ end
 -- 周推进
 -- ============================================================================
 
+--- 确保本周依赖的赛季数据（赛程 + 时间线）都已就绪
+--- 主页/日程页/推进流程都先调它，避免各处各自 ensure 出现时序差
+---@param s CareerState
+local function ensureSeasonData(s)
+    if not s then return end
+    local ScheduleMod = require("Core.Schedule")
+    ScheduleMod.ensure(s)
+    local TimelineMod = require("Core.Timeline")
+    TimelineMod.ensure(s)
+end
+
 --- 判定本周是否有比赛
 ---@return boolean
 function Career.hasGameThisWeek()
     local s = Career.state
     if not s then return false end
-    local cfg = Config.SEASON
-    local interval = cfg.weeksPerSeason / cfg.gamesPerSeason
-    local pos = (s.week - 1) % interval
-    return math.floor(pos) == 0
+    ensureSeasonData(s)
+    -- 季后赛期间：每周都有比赛（逐轮晋级）
+    if s.playoff and not s.playoff.done then
+        return true
+    end
+    local ScheduleMod = require("Core.Schedule")
+    return ScheduleMod.hasGameThisWeek(s)
+end
+
+--- 本周的赛程条目（供比赛界面取对手）
+---@return table|nil
+function Career.getGameThisWeek()
+    local s = Career.state
+    if not s then return nil end
+    ensureSeasonData(s)
+
+    -- 季后赛优先
+    if s.playoff and not s.playoff.done then
+        return {
+            week = s.week,
+            opponent = s.playoff.opponent,
+            strength = s.playoff.opponentStrength,
+            playoff = true,
+            round = s.playoff.round,
+        }
+    end
+    local ScheduleMod = require("Core.Schedule")
+    return ScheduleMod.gameThisWeek(s)
 end
 
 --- 推进一周，返回本周发生的事项列表
@@ -811,8 +1095,39 @@ function Career.advanceWeek()
         Career.addLog(healed)
     end
 
+    -- 疲劳恢复：每周衰减 1 层，风险随之回落
+    if (s.fatigueStreak or 0) > 0 then
+        s.fatigueStreak = s.fatigueStreak - 1
+    end
+
+    -- 出身 perk：自带流量（每周自动积累人气，人气本身会持续变现为代言收入）
+    -- 注意：必须写进 events，否则效果完全不可见，玩家会以为该出身没有特色
+    local perk = Career.getPerk()
+    if perk and perk.weeklyFame and perk.weeklyFame > 0 then
+        Career.addFame(perk.weeklyFame)
+        table.insert(events, string.format("◆ %s：人气 +%d（现 %d）", perk.name, perk.weeklyFame, s.fame))
+    end
+
     -- 赛季推进
+    local Schedule = require("Core.Schedule")
     s.week = s.week + 1
+
+    -- 常规赛打满 → 构建季后赛
+    if s.week > Config.SEASON.weeksPerSeason and s.playoff == nil then
+        Career.startPlayoff()
+    end
+
+    -- 季后赛进行中：本周刚打完一轮，只要没被淘汰/没夺冠就继续下一轮
+    if s.playoff and not s.playoff.done then
+        s.week = Config.SEASON.weeksPerSeason + 1
+        local msg = string.format("★ 季后赛【%s】对手：%s",
+            Schedule.ROUND_NAMES[s.playoff.round] or "季后赛", s.playoff.opponent)
+        table.insert(events, msg)
+        Career.addLog(msg)
+        return events
+    end
+
+    -- 赛季真正结束（常规赛未晋级，或季后赛已打完）
     if s.week > Config.SEASON.weeksPerSeason then
         s.week = 1
         s.season = s.season + 1
@@ -822,13 +1137,63 @@ function Career.advanceWeek()
         end
     end
 
-    -- 年龄推进（每 4 个赛季长一岁）
-    if (s.season - 1) % 4 == 0 and s.week == 1 then
+    -- 年龄推进（周期由 Config.CAREER.seasonsPerYear 控制）
+    local perYear = Config.CAREER.seasonsPerYear or 1
+    if (s.season - 1) % perYear == 0 and s.week == 1 then
         s.age = s.age + 1
         Career.updateStage()
     end
 
+    -- 到达强制退役年龄 → 触发退役
+    if s.age >= (Config.CAREER.retireAge or 38) and not s.retired then
+        s.retired = true
+        Career.addLog("打完了最后一个赛季，正式挂靴。")
+        table.insert(events, "★ 你宣布退役，生涯就此落幕。")
+    end
+
     return events
+end
+
+-- ============================================================================
+-- 退役
+-- ============================================================================
+
+--- 主动退役（由「最后一舞」事件的"宣布退役"选项调用）
+---@return boolean 是否成功触发
+function Career.retire()
+    local s = Career.state
+    if not s or s.retired then return false end
+    s.retired = true
+    Career.addLog("在发布会上宣布退役，一个时代结束了。")
+    return true
+end
+
+--- 生涯综合评分（0-100），用于名人堂评价
+---@return number
+function Career.careerScore()
+    local s = Career.state
+    if not s then return 0 end
+    local score = 0
+    score = score + (s.titles or 0) * 12
+    score = score + (s.mvps or 0) * 10
+    score = score + (s.allStars or 0) * 5
+    score = score + math.min(30, (s.totalPoints or 0) / 400)
+    score = score + math.min(15, (s.fame or 0) / 200)
+    score = score + math.min(10, (Career.getOverall() - 50) / 5)
+    if score < 0 then score = 0 end
+    if score > 100 then score = 100 end
+    return math.floor(score + 0.5)
+end
+
+--- 生涯总评文案
+---@return string
+function Career.careerVerdict()
+    local score = Career.careerScore()
+    if score >= 85 then return "历史级别：你的名字会被刻在球馆穹顶。" end
+    if score >= 65 then return "名人堂成员：一个值得被讲述的职业生涯。" end
+    if score >= 45 then return "全明星级别：你在联盟里留下了自己的印记。" end
+    if score >= 25 then return "合格首发：稳定而体面的职业生涯。" end
+    return "角色球员：至少，你认真打过每一场球。"
 end
 
 --- 依据年龄更新生涯阶段
@@ -884,12 +1249,26 @@ function Career.endSeason()
         Career.addFame(1200)
     end
 
-    -- 总冠军
-    if ov >= 72 and ppg >= 16 and math.random() < 0.35 then
+    -- 总冠军：由季后赛结果决定（此前是 math.random() < 0.35 的纯掷骰）
+    local Schedule = require("Core.Schedule")
+    local po = s.playoff
+    if po and po.champion then
         s.titles = s.titles + 1
         table.insert(s.honors, string.format("第%d赛季 总冠军", seasonNo))
         table.insert(out, "★★★ 夺得总冠军！")
         Career.addFame(1500)
+    elseif po then
+        -- 打进季后赛但没夺冠：给与战绩相称的荣誉
+        local wins, losses = Schedule.record(s)
+        if po.round == "final" then
+            table.insert(out, string.format("总决赛惜败，与冠军擦肩而过（常规赛 %d 胜 %d 负）。", wins, losses))
+            Career.addFame(400)
+        else
+            table.insert(out, string.format("止步半决赛（常规赛 %d 胜 %d 负）。", wins, losses))
+        end
+    elseif s.playoffResult == "regular" then
+        local wins, losses = Schedule.record(s)
+        table.insert(out, string.format("常规赛 %d 胜 %d 负，未能进入季后赛。", wins, losses))
     end
 
     -- 合同与薪资（球队档次影响年薪倍率，这是转会的直接收益）
@@ -915,18 +1294,33 @@ function Career.endSeason()
         table.insert(out, expired[i])
     end
 
-    -- 人气够高时，经纪公司会主动带代言上门（原生路径，不依赖广告；同时只保留一份）
-    if s.fame >= Config.ECONOMY.endorseFameGate and #(s.endorsements or {}) == 0 then
-        local BRANDS = { "运动饮料", "球鞋品牌", "腕表", "汽车", "手机" }
-        local brand = BRANDS[math.random(1, #BRANDS)] or "运动饮料"
-        local pay = math.floor(20 + s.fame / 12)
-        Career.addEndorsement(brand, pay, 2)
-        table.insert(out, string.format("签下「%s」代言，每赛季 %d 万。", brand, pay))
-    end
-
-    -- 训练经验加成到期（按赛季失效）
-    if s.boostActive then
-        s.boostActive = false
+    -- 代言签约：人气越高可签的品牌档位越高，且年薪随人气线性放大。
+    -- 这是「人气」这一资源的核心出口——人气不再是死资源，每一点都会持续变现。
+    if s.fame >= Career.endorseFameGate() then
+        local tierIdx = Career.endorseTierOf(s.fame)
+        local tier = Config.ECONOMY.endorseTiers[tierIdx]
+        -- 已有代言：只做「升档」判定（不重复堆叠份数，避免后期收入爆炸）
+        local currentTier = s.endorseTier or 0
+        if tierIdx > currentTier then
+            local brand = tier.brands[math.random(1, #tier.brands)] or "运动饮料"
+            local pay = Career.calcEndorsePay(tier, s.fame)
+            -- 升档时替换旧代言（旧合约让位给更大的牌子）
+            s.endorsements = {}
+            Career.addEndorsement(brand, pay, 2)
+            s.endorseTier = tierIdx
+            if currentTier == 0 then
+                table.insert(out, string.format("签下「%s」代言，每赛季 %d 万。", brand, pay))
+            else
+                table.insert(out, string.format("★ 代言升级为「%s」，每赛季 %d 万！", brand, pay))
+                Career.addFame(200)
+            end
+        elseif #(s.endorsements or {}) == 0 then
+            -- 兜底：档位没变但代言到期了，按当前档位续一份
+            local brand = tier.brands[math.random(1, #tier.brands)] or "运动饮料"
+            local pay = Career.calcEndorsePay(tier, s.fame)
+            Career.addEndorsement(brand, pay, 2)
+            table.insert(out, string.format("续签「%s」代言，每赛季 %d 万。", brand, pay))
+        end
     end
 
     -- 士气浮动
@@ -944,26 +1338,106 @@ function Career.endSeason()
     s.seasonPoints = 0
     s.seasonGames = 0
 
+    -- 季后赛、赛程与时间线归档，下赛季开始时重新生成
+    s.playoff = nil
+    s.playoffResult = nil
+    s.schedule = nil
+    s.timeline = nil
+
     print(string.format("[Career] 赛季结算完成，场均 %.1f 分，荣誉 %d 项", ppg, #s.honors))
     return out
+end
+
+--- 常规赛打完后，构建季后赛（赛季最后一周结束时调用）
+---@return table|nil
+function Career.startPlayoff()
+    local s = Career.state
+    if not s then return nil end
+    local Schedule = require("Core.Schedule")
+    local po = Schedule.buildPlayoff(s)
+    if po then
+        Career.addLog(string.format("【%s】对手：%s", Schedule.ROUND_NAMES[po.round] or "季后赛", po.opponent))
+    else
+        Career.addLog("常规赛结束，未能进入季后赛。")
+    end
+    return po
 end
 
 -- ============================================================================
 -- 存档 / 读档
 -- ============================================================================
 
+--- 把内容写到指定文件
+---@param path string
+---@param content string
+---@return boolean
+local function writeFile(path, content)
+    local file = File(path, FILE_WRITE)
+    if not file:IsOpen() then
+        print("[Career] 写入失败：无法打开 " .. path)
+        return false
+    end
+    file:WriteString(content)
+    -- 先落盘再关闭，减少掉电/崩溃时丢数据的窗口
+    file:Flush()
+    file:Close()
+    return true
+end
+
+--- 读取文件内容，失败返回 nil
+---@param path string
+---@return string|nil
+local function readFile(path)
+    local file = File(path, FILE_READ)
+    if not file:IsOpen() then return nil end
+    local raw = file:ReadString()
+    file:Close()
+    return raw
+end
+
+--- 解析存档文本，失败返回 nil
+---@param raw string|nil
+---@return CareerState|nil
+local function decodeState(raw)
+    if not raw or raw == "" then return nil end
+    local ok, data = pcall(cjson.decode, raw)
+    if not ok or type(data) ~= "table" then return nil end
+    ---@type CareerState
+    local state = data
+    -- 存档必须能认出是哪个球员，否则视为无效
+    if type(state.name) ~= "string" or state.name == "" then return nil end
+    return state
+end
+
 --- 保存生涯进度
+--- 采用「写临时文件 → 备份旧档 → 原子替换」三步，任何一步失败都不会破坏现有存档
 ---@return boolean
 function Career.save()
     local s = Career.state
     if not s then return false end
-    local file = File(Config.SAVE_FILE, FILE_WRITE)
-    if not file:IsOpen() then
-        print("[Career] 存档失败：无法打开文件")
+
+    local encoded = cjson.encode(s)
+    if not encoded or encoded == "" then
+        print("[Career] 存档失败：序列化结果为空")
         return false
     end
-    file:WriteString(cjson.encode(s))
-    file:Close()
+
+    -- 1. 先完整写入临时文件（此时正式存档仍是上一个好版本）
+    if not writeFile(Config.SAVE_TMP_FILE, encoded) then
+        return false
+    end
+
+    -- 2. 把当前正式存档轮换为备份（供读档兜底）
+    if fileSystem:FileExists(Config.SAVE_FILE) then
+        fileSystem:Copy(Config.SAVE_FILE, Config.SAVE_BAK_FILE)
+    end
+
+    -- 3. 原子替换：临时文件改名为正式存档
+    if not fileSystem:Rename(Config.SAVE_TMP_FILE, Config.SAVE_FILE) then
+        print("[Career] 存档失败：替换正式存档失败")
+        return false
+    end
+
     print("[Career] 存档成功")
     return true
 end
@@ -975,21 +1449,25 @@ function Career.hasSave()
 end
 
 --- 读取存档
+--- 正式存档损坏时自动回退到上一次的备份
 ---@return CareerState|nil
 function Career.load()
     if not Career.hasSave() then return nil end
-    local file = File(Config.SAVE_FILE, FILE_READ)
-    if not file:IsOpen() then return nil end
-    local raw = file:ReadString()
-    file:Close()
 
-    local ok, data = pcall(cjson.decode, raw)
-    if not ok or type(data) ~= "table" then
-        print("[Career] 存档损坏，已忽略")
+    ---@type CareerState|nil
+    local state = decodeState(readFile(Config.SAVE_FILE))
+    if not state and fileSystem:FileExists(Config.SAVE_BAK_FILE) then
+        print("[Career] 正式存档损坏，尝试读取备份")
+        state = decodeState(readFile(Config.SAVE_BAK_FILE))
+        if state then
+            print("[Career] 已从备份恢复存档")
+        end
+    end
+    if not state then
+        print("[Career] 存档损坏且无可用备份，已忽略")
         return nil
     end
-    ---@type CareerState
-    local state = data
+
     -- 兼容性补全
     if state.seenEvents == nil then state.seenEvents = {} end
     if state.catCooldown == nil then state.catCooldown = {} end
@@ -1010,20 +1488,28 @@ function Career.load()
     if state.tactics == nil then state.tactics = {} end
     if state.welfareDay == nil then state.welfareDay = "" end
     if state.welfareClaims == nil then state.welfareClaims = 0 end
+    if state.focusCharges == nil then state.focusCharges = 0 end
+    if state.actionDoublePending == nil then state.actionDoublePending = false end
+    if state.actionDoneKey == nil then state.actionDoneKey = "" end
+    if state.pickTeamCredit == nil then state.pickTeamCredit = false end
+    if state.timeline == nil then state.timeline = nil end
+    if state.timelineSeason == nil then state.timelineSeason = 0 end
+    if state.storyMemory == nil then state.storyMemory = "" end
+    if state.storyPaths == nil then state.storyPaths = {} end
+    if state.storyHistory == nil then state.storyHistory = {} end
+    if state.postStoryDone == nil then state.postStoryDone = false end
     Career.state = state
+    -- 读档后补齐本周依赖的赛程与时间线（旧存档没有这两个字段）
+    ensureSeasonData(state)
     print("[Career] 读档成功：" .. tostring(state.name))
     return state
 end
 
---- 删除存档
+--- 删除存档（连同临时文件与备份一起清掉，否则备份会让已删存档复活）
 function Career.clearSave()
-    if Career.hasSave() then
-        local file = File(Config.SAVE_FILE, FILE_WRITE)
-        if file:IsOpen() then
-            file:WriteString("")
-            file:Close()
-        end
-    end
+    fileSystem:Delete(Config.SAVE_FILE)
+    fileSystem:Delete(Config.SAVE_TMP_FILE)
+    fileSystem:Delete(Config.SAVE_BAK_FILE)
     Career.state = nil
 end
 

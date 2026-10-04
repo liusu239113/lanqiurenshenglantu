@@ -177,7 +177,7 @@ function ScreenAttr.Build(onBack)
         local function addPoint(key)
             local ok, msg = Career.spendAttrPoint(key)
             if not ok then
-                UI.Toast.Show(msg, { duration = 2, variant = "warning", position = "bottom" })
+                UI.Toast.Show(msg, { duration = 2, variant = "warning", position = "top" })
                 refresh()
                 return
             end
@@ -186,7 +186,7 @@ function ScreenAttr.Build(onBack)
                 local def = Config.ATTRS[i]
                 if def.key == key then
                     UI.Toast.Show(string.format("%s %s", def.name, msg),
-                        { duration = 1.6, variant = "success", position = "bottom" })
+                        { duration = 1.6, variant = "success", position = "top" })
                     break
                 end
             end
@@ -277,15 +277,15 @@ function ScreenAttr.Build(onBack)
                         if ok then
                             Career.save()
                             Audio.Play("levelup")
-                            UI.Toast.Show(msg, { duration = 2, variant = "success", position = "bottom" })
+                            UI.Toast.Show(msg, { duration = 2, variant = "success", position = "top" })
                         else
-                            UI.Toast.Show(msg, { duration = 2, variant = "warning", position = "bottom" })
+                            UI.Toast.Show(msg, { duration = 2, variant = "warning", position = "top" })
                         end
                         refresh()
                     end,
                 },
 
-                -- 原生路径之二：花钱请私教（钱从年薪/代言/商业活动/彩票来）
+                -- 原生路径之二：花钱请私教（钱从年薪/代言/商业活动来）
                 UI.Button {
                     text = canAfford
                         and string.format("自费私教：花 %d 万买 1 点属性点（现有 %d 万）", moneyCost, money)
@@ -307,9 +307,9 @@ function ScreenAttr.Build(onBack)
                         if ok then
                             Career.save()
                             Audio.Play("levelup")
-                            UI.Toast.Show(msg, { duration = 2, variant = "success", position = "bottom" })
+                            UI.Toast.Show(msg, { duration = 2, variant = "success", position = "top" })
                         else
-                            UI.Toast.Show(msg, { duration = 2, variant = "warning", position = "bottom" })
+                            UI.Toast.Show(msg, { duration = 2, variant = "warning", position = "top" })
                         end
                         refresh()
                     end,
@@ -317,7 +317,7 @@ function ScreenAttr.Build(onBack)
             },
         }
 
-        return Common.Screen(Config.ART.bgLocker, {
+        return Common.Screen(Config.ART.bgTrainingRoom, {
             Common.TopBar("能 力 特 训", function()
                 Audio.Play("click")
                 onBack()

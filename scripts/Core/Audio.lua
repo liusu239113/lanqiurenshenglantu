@@ -21,6 +21,9 @@ local currentBgm_ = ""
 -- 音量
 local sfxVolume_ = 0.7
 local bgmVolume_ = 0.35
+-- 静音开关（设置页控制）
+local sfxMuted_ = false
+local bgmMuted_ = false
 -- 音效缓存
 ---@type table<string, Sound>
 local sfxCache_ = {}
@@ -63,6 +66,8 @@ function Audio.Play(key, gain)
         sfxCache_[key] = sound
     end
 
+    if sfxMuted_ then return end   -- 静音时不创建音源，避免无谓开销
+
     local src = sfxNode_:CreateComponent("SoundSource")
     if not src then return end
     src.soundType = "EFFECT"
@@ -91,7 +96,8 @@ function Audio.PlayBgm(key)
 
     sound.looped = true
     bgmSource_:Stop()
-    bgmSource_:Play(sound, 0, bgmVolume_)
+    -- 静音时仍记录曲目，但以 0 音量播放，取消静音即可续上
+    bgmSource_:Play(sound, 0, bgmMuted_ and 0 or bgmVolume_)
     currentBgm_ = key
     print("[Audio] 切换 BGM: " .. key)
 end
@@ -119,6 +125,38 @@ end
 ---@return number, number
 function Audio.GetVolume()
     return sfxVolume_, bgmVolume_
+end
+
+-- ---------------------------------------------------------------------------
+-- 静音开关（设置页使用）
+-- ---------------------------------------------------------------------------
+--- 设置静音
+---@param sfxMuted boolean
+---@param bgmMuted boolean
+function Audio.SetMuted(sfxMuted, bgmMuted)
+    sfxMuted_ = sfxMuted and true or false
+    bgmMuted_ = bgmMuted and true or false
+    if bgmSource_ then
+        if bgmMuted_ then
+            bgmSource_.gain = 0
+        elseif bgmSource_.playing then
+            bgmSource_.gain = bgmVolume_
+        end
+    end
+    print(string.format("[Audio] 静音设置 音效=%s 音乐=%s",
+        tostring(sfxMuted_), tostring(bgmMuted_)))
+end
+
+--- 获取静音状态
+---@return boolean, boolean
+function Audio.GetMuted()
+    return sfxMuted_, bgmMuted_
+end
+
+--- 静音状态下 Play 应传 0
+---@return number
+function Audio.sfxGainMul()
+    return sfxMuted_ and 0 or 1
 end
 
 return Audio

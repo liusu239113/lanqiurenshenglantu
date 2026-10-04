@@ -20,13 +20,17 @@ function Theme.Setup()
     end
 
     local gameTheme = UI.Theme.ExtendTheme(base, {
-        -- 中文字体（粗黑字重，契合漫画感）
+        -- 中文字体：三档字重
+        -- 此前 normal 与 bold 都是 Black(900)，导致 11px 小字糊成一团、正文与标题无字重对比
         fonts = {
             {
                 family = "sans",
                 weights = {
-                    normal = "Fonts/NotoSansSC-Black.ttf",
-                    bold = "Fonts/NotoSansSC-Black.ttf",
+                    normal   = "Fonts/NotoSansSC-Regular.ttf",  -- 正文
+                    medium   = "Fonts/NotoSansSC-Medium.ttf",   -- 小标题/强调
+                    bold     = "Fonts/NotoSansSC-Black.ttf",    -- 大标题
+                    semibold = "Fonts/NotoSansSC-Medium.ttf",
+                    light    = "Fonts/NotoSansSC-Regular.ttf",
                 },
             },
         },
