@@ -121,6 +121,8 @@ local kickoffMatch
 local finishWeek
 ---@type fun(state: CareerState)|nil
 local onMatchFinished
+---@type fun(state: CareerState, onConfirm: fun())|nil
+local showWeekPreview
 
 -- ============================================================================
 -- 场景与事件
@@ -1052,6 +1054,129 @@ local function showInjuryCard(state, onRest)
     })
 end
 
+-- ---------------------------------------------------------------------------
+-- 跳过比赛（快速模拟）
+--
+-- 免费额度每天 5 场（现实日期滚动），用完后看一次广告 +15 场。
+-- 跳过完全走文字直播的推演引擎（MatchText.skipWholeMatch），因此结果与亲手打
+-- 同一量级 —— 它省的是时间，不是难度。跳过之后照常走 onMatchFinished，
+-- 赛程、伤病、队友、宿敌、战报一个都不少。
+-- ---------------------------------------------------------------------------
+
+--- 执行跳过：推演 + 结算 + 照常走赛后流程
+---@param state CareerState
+local function doSkipMatch(state)
+    MatchText.skipWholeMatch(state, Career.getStage())
+    Career.save()
+    -- 跳过不占用比赛界面状态（inMatch_/inTextMatch_），直接进赛后结算
+    if onMatchFinished then onMatchFinished(state) end
+end
+
+--- 弹出「跳过比赛」确认卡
+--- 免费额度用完时，主按钮变成广告按钮（看完 +15 场并直接跳过本场）。
+---@param state CareerState
+---@param onCancel fun() 取消后回到赛前卡片
+local function showSkipCard(state, onCancel)
+    local left = Ads.left(state, "skipMatch")
+    local bonus = Config.SKIP_MATCH.adBonus
+    local free = Config.SKIP_MATCH.freePerDay
+
+    ---@type string
+    local tip
+    if left > 0 then
+        tip = string.format("今天还能免费跳过 %d 场（每天 %d 场，现实时间刷新）。", left, free)
+    else
+        tip = string.format("今天的免费跳过次数已用完。看一次广告可追加 %d 场。", bonus)
+    end
+
+    ---@type table[]
+    local buttons = {}
+
+    if left > 0 then
+        -- 免费跳过：直接推演
+        table.insert(buttons, Common.PrimaryButton("跳 过 本 场", function()
+            Audio.Play("whistle")
+            Ads.consume(state, "skipMatch")
+            doSkipMatch(state)
+        end))
+    else
+        -- 额度用完：看广告换次数（看完直接跳过本场，不再多一步确认）
+        table.insert(buttons, AdWidgets.Button(state, "skipMatch", function()
+            -- onReward：先加次数，再消耗一次完成本场跳过。
+            -- 顺序不能反 —— addQuota 内部会先做懒重置，若先 consume 会把
+            -- 刚补发的次数当成旧额度处理。
+            Ads.addQuota(state, "skipMatch", bonus)
+            Ads.consume(state, "skipMatch")
+            doSkipMatch(state)
+            return string.format("已追加 %d 场跳过次数，本场已模拟完成", bonus)
+        end, {
+            label = string.format("▶ 看广告 · 追加 %d 场跳过（今日已用完）", bonus),
+            height = 56,
+            fontSize = 15,
+        }))
+    end
+
+    table.insert(buttons, Common.OutlineButton("再 想 想（回到赛前）", function()
+        Audio.Play("click")
+        onCancel()
+    end, { height = 46, fontSize = 14 }))
+
+    local card = UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        backgroundColor = C.bgCard,
+        borderWidth = 3,
+        borderColor = C.outline,
+        overflow = "hidden",
+        children = {
+            Common.Bar("快 速 模 拟", C.secondary),
+            UI.Panel {
+                width = "100%",
+                flexDirection = "column",
+                gap = 12,
+                padding = 16,
+                children = {
+                    Common.Body("跳过本场比赛，直接按你的球队实力推演出结果与战报。", 14),
+                    Common.Sub("对手强度、体能消耗、伤病判定、队友化学反应都与亲手打完全一致；省下的是时间，不是难度。", 12),
+                    Common.Sub(tip, 12),
+                },
+            },
+        },
+    }
+
+    UI.SetRoot(UI.Panel {
+        width = "100%",
+        height = "100%",
+        flexDirection = "row",
+        justifyContent = "center",
+        alignItems = "center",
+        backgroundColor = { 26, 22, 20, 200 },
+        children = {
+            UI.Panel {
+                width = "100%",
+                maxWidth = Common.CONTENT_MAX_W,
+                paddingHorizontal = 16,
+                children = {
+                    UI.Panel {
+                        width = "100%",
+                        flexDirection = "column",
+                        gap = 10,
+                        children = {
+                            card,
+                            UI.Panel {
+                                width = "100%",
+                                flexDirection = "column",
+                                gap = 8,
+                                children = buttons,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    })
+end
+
 --- 体能见底时，体能师在更衣室拦住你（看广告把体能拉满）
 ---@param state CareerState
 ---@param onGo fun() 直接上场
@@ -1136,7 +1261,7 @@ end
 --- 现在先摊开这周要面对什么，玩家确认后才进入比赛。
 ---@param state CareerState
 ---@param onConfirm fun()
-local function showWeekPreview(state, onConfirm)
+showWeekPreview = function(state, onConfirm)
     local Schedule = require("Core.Schedule")
     local Timeline = require("Core.Timeline")
 
@@ -1269,6 +1394,23 @@ local function showWeekPreview(state, onConfirm)
         table.insert(actions, Common.PrimaryButton("开 打", function()
             Audio.Play("whistle")
             onConfirm()
+        end))
+        -- 跳过本场：免去 16 回合的手动操作，直接推演结果。
+        -- 免费额度每天 5 场，用完看广告续 —— 额度信息放在按钮上，不用点进去才知道。
+        local skipLeft = Ads.left(state, "skipMatch")
+        ---@type string
+        local skipLabel
+        if skipLeft > 0 then
+            skipLabel = string.format("跳 过 本 场 · 快速模拟（今日剩 %d）", skipLeft)
+        else
+            skipLabel = "跳 过 本 场 · 看广告追加次数"
+        end
+        table.insert(actions, Common.SecondaryButton(skipLabel, function()
+            Audio.Play("click")
+            showSkipCard(state, function()
+                -- 取消后回到赛前卡片
+                showWeekPreview(state, onConfirm)
+            end)
         end))
     else
         table.insert(actions, Common.PrimaryButton("推 进 一 周", function()

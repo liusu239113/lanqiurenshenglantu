@@ -82,6 +82,16 @@ Ads.DAILY_LIMIT = {
     stamina = Config.AD_REWARDS.staminaDaily,
 }
 
+--- 需要【现实日期】滚动的广告位上限
+---
+--- 与 DAILY_LIMIT（按游戏内 赛季-周-年龄 滚动）不同：跳过比赛的免费额度是
+--- 「每天 5 场」，必须以真实世界的一天为界 —— 玩家一天内推进好几个游戏周，
+--- 若用游戏内周次计数，额度会在几分钟内被刷光，免费额度形同虚设。
+--- 见 Ads.realDayLeft / Ads.addQuota。
+Ads.REAL_DAY_LIMIT = {
+    skipMatch = Config.SKIP_MATCH.freePerDay,
+}
+
 --- 赛季配额上限
 Ads.SEASON_LIMIT = {
     attrPoints = Config.AD_REWARDS.attrPointsSeason,
@@ -205,6 +215,15 @@ Ads.PLACEMENTS = {
     matchForce = {
         id = "matchForce", name = "关键球保险", desc = "接下来这一次出手 / 突破 / 防守必定成功",
         quotaType = "none", quotaKey = "matchForce",
+    },
+    -- 跳过比赛：每天免费 5 场，用完后看一次广告 +15 场（当天有效）。
+    -- quotaType = "realday" —— 免费额度按【现实日期】滚动，见 Ads.REAL_DAY_LIMIT。
+    -- 广告看完后不是把次数「补满」，而是直接追加 adBonus 次，所以连看两次能叠到 30 场。
+    skipMatch = {
+        id = "skipMatch", name = "快速模拟",
+        desc = string.format("跳过本场比赛，直接按球队实力推演出结果与战报（看完追加 %d 次）",
+            Config.SKIP_MATCH.adBonus),
+        quotaType = "realday", quotaKey = "skipMatch",
     },
 }
 
@@ -378,6 +397,71 @@ function Ads.seasonLeft(state, key)
     return left
 end
 
+-- ---------------------------------------------------------------------------
+-- 现实日期配额（跳过比赛用）
+--
+-- 与游戏内日期配额（dailyLeft）的区别：这里以**真实世界的一天**为界。
+-- 判定用「当前剩余 + 距上次重置经过的天数 × 每日免费额度」递增补发，
+-- 而不是「换天即清零」—— 后者会把「昨天看广告攒的 20 次」直接抹掉，
+-- 玩家会觉得广告白看了。递增补发意味着没花掉的次数最多攒到上限。
+--
+-- 日期取 os.date("*t")（设备本地时间）。这是单机游戏，玩家改系统时间刷次数
+-- 只影响自己的体验，不涉及公平性；如需防作弊可换 common.get_server_time()。
+-- ---------------------------------------------------------------------------
+
+--- 本地日期序号（自 1970-01-01 起的天数，取整）
+--- 用 os.time 直接除，避免依赖 os.date 的字段拼接。
+---@return integer
+local function realDayIndex()
+    local t = os.time()
+    if not t then return 0 end
+    return math.floor(t / 86400)
+end
+
+--- 现实日期配额剩余（懒重置：按经过的天数补发每日免费额度）
+---@param state CareerState
+---@param key string
+---@return number
+function Ads.realDayLeft(state, key)
+    local u = ensure(state)
+    local cap = Ads.REAL_DAY_LIMIT[key] or 0
+    local idxKey = key .. "DayIdx"
+    local leftKey = key .. "Left"
+    local today = realDayIndex()
+
+    -- 首次使用：直接给满
+    if u[idxKey] == nil then
+        u[idxKey] = today
+        u[leftKey] = cap
+    end
+
+    local last = u[idxKey] or today
+    if today > last then
+        -- 每经过一天补发一次每日额度，但总量不超过上限
+        local gained = (today - last) * cap
+        u[leftKey] = math.min(cap, (u[leftKey] or 0) + gained)
+        u[idxKey] = today
+    end
+
+    local left = u[leftKey] or 0
+    if left < 0 then left = 0 end
+    return left
+end
+
+--- 追加现实日期配额（看完广告时调用）
+---@param state CareerState|nil
+---@param key string
+---@param n number
+function Ads.addQuota(state, key, n)
+    if not state or n <= 0 then return end
+    local u = ensure(state)
+    -- 先触发懒重置，确保 leftKey 已初始化
+    Ads.realDayLeft(state, key)
+    local leftKey = key .. "Left"
+    u[leftKey] = (u[leftKey] or 0) + n
+    print(string.format("[Ads] 追加现实日配额 %s +%d（剩余 %d）", key, n, u[leftKey]))
+end
+
 --- 消耗一次配额（只在成功回调里调用）
 --- 无配额的广告位（quotaType == "none"）不依赖生涯数据
 ---@param state CareerState|nil
@@ -397,6 +481,11 @@ function Ads.consume(state, placementId)
         -- 先触发懒重置，再累加
         Ads.seasonLeft(state, p.quotaKey)
         u[p.quotaKey] = (u[p.quotaKey] or 0) + 1
+    elseif p.quotaType == "realday" then
+        -- 现实日期配额：消耗 = 剩余减一（不看 adUsage 里的绝对计数）
+        Ads.realDayLeft(state, p.quotaKey)
+        local leftKey = p.quotaKey .. "Left"
+        u[leftKey] = math.max(0, (u[leftKey] or 0) - 1)
     end
 end
 
@@ -416,6 +505,8 @@ function Ads.left(state, placementId)
         return Ads.dailyLeft(state, p.quotaKey)
     elseif p.quotaType == "season" then
         return Ads.seasonLeft(state, p.quotaKey)
+    elseif p.quotaType == "realday" then
+        return Ads.realDayLeft(state, p.quotaKey)
     end
     return 999
 end
@@ -437,9 +528,12 @@ function Ads.buttonText(state, placementId)
 
     local left = Ads.left(state, placementId)
     if left <= 0 then
-        return string.format("%s（%s已用完）", p.name, p.quotaType == "daily" and "今日" or "本季")
+        local scope = "本季"
+        if p.quotaType == "daily" then scope = "今日"
+        elseif p.quotaType == "realday" then scope = "今日" end
+        return string.format("%s（%s已用完）", p.name, scope)
     end
-    if p.quotaType == "daily" then
+    if p.quotaType == "daily" or p.quotaType == "realday" then
         return string.format("▶ 看广告 · %s（今日剩 %d 次）", p.name, left)
     end
     return string.format("▶ 看广告 · %s（本季剩 %d 次）", p.name, left)
@@ -551,7 +645,14 @@ function Ads.refund(state, placementId)
     if p.quotaType == "none" then return end
 
     local u = ensure(state)
-    u[p.quotaKey] = math.max(0, (u[p.quotaKey] or 0) - 1)
+    if p.quotaType == "realday" then
+        -- 现实日期配额的计数器在 "<key>Left"，与 daily/season 的绝对计数不同
+        Ads.realDayLeft(state, p.quotaKey)
+        local leftKey = p.quotaKey .. "Left"
+        u[leftKey] = (u[leftKey] or 0) + 1
+    else
+        u[p.quotaKey] = math.max(0, (u[p.quotaKey] or 0) - 1)
+    end
     print(string.format("[Ads] 退还配额 %s.%s（剩余 %d）",
         placementId, p.quotaKey, Ads.left(state, placementId)))
 end

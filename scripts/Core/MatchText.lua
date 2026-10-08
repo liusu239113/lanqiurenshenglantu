@@ -566,4 +566,123 @@ function MatchText.finish(state)
     return result
 end
 
+-- ---------------------------------------------------------------------------
+-- 跳过比赛（快速模拟）
+--
+-- 复用本模块的推演与结算：先 start 建会话，再不断 next() 推进，遇到决策点
+-- 自动作答，直到比赛结束，最后 finish() 写入生涯。全程不经过任何 UI。
+--
+-- 为什么不另写一套「模拟器」：本模块的逐节比分、个人得分、徽章折算、
+-- 士气/体能消耗已经是一套调好的平衡。另写一套必然与亲手打的结果产生量级差，
+-- 玩家会很快发现「跳过总是输」或「跳过总是赢」—— 跳过就变成了漏洞而不是功能。
+-- ---------------------------------------------------------------------------
+
+--- 自动做出当前决策（跳过比赛用）
+--- 取各项属性里当前值最高的那一项对应的选项 —— 成功率最高的选择。
+--- 不掷随机：玩家按下「跳过」时预期的是「尽力打好」，不是「随便点一个」。
+---@return table|nil decide 的返回值（无待决策时返回 nil）
+function MatchText.autoDecide()
+    local s = MatchText.session
+    if not s or not s.pendingDecision then return nil end
+
+    local CareerMod = require("Core.Career")
+    local ma = CareerMod.matchAttrs()
+    local dec = s.pendingDecision
+
+    local bestIdx = 1
+    local bestVal = -1
+    for i = 1, #dec.options do
+        local v = ma[dec.options[i].attrKey] or 0
+        if v > bestVal then
+            bestVal = v
+            bestIdx = i
+        end
+    end
+    return MatchText.decide(bestIdx)
+end
+
+--- 跳过整场比赛：自动推演 + 自动决策 + 结算
+---
+--- 与文字直播的差异（只在这里生效，不影响已上线的文字直播）：
+---   文字直播的推演只看球队实力，玩家的个人能力完全不参与。跳过直接复用它会
+---   导致「省了时间但基本必输」（实测新秀胜率 5%，而操作模式随机打有 25%）。
+---   所以这里在推演前给「我方实力」加一笔个人能力加成（Config.SKIP_MATCH.playerCarry），
+---   让跳过结果与操作模式同量级 —— 跳过省的是时间，不是难度。
+---@param state CareerState
+---@param stage StageDef|nil
+---@return table result
+function MatchText.skipWholeMatch(state, stage)
+    MatchText.start(state, stage)
+
+    -- 个人能力加成：把玩家能力换算成「每场净胜分贡献」，直接调整总分。
+    --
+    -- 为什么不用「提升球队实力再重推比分」：逐节公式是 qBase * ratio * 2，
+    -- 把实力比放大了一倍，胜率对实力比极度敏感（实测比值 0.45 → 胜率 5%，
+    -- 0.50 → 95%）。用这条路，玩家能力涨一两点就会让跳过从「必输」跳到「必胜」，
+    -- 既不可控也不可解释。改成直接加减净胜分，关系平滑、单参数可调。
+    local s = MatchText.session
+    if s then
+        local CareerMod = require("Core.Career")
+        local ma = CareerMod.matchAttrs()
+        local sum = 0
+        for i = 1, #Config.ATTRS do
+            sum = sum + (ma[Config.ATTRS[i].key] or 0)
+        end
+        local overall = sum / #Config.ATTRS
+        local marginBonus = Config.SKIP_MATCH.playerCarry + (overall - 40) * 1.2
+        if marginBonus < 0 then marginBonus = 0 end
+        -- 上限：不让成长项无限膨胀，否则满级球员跳过变成「必胜」，
+        -- 手感模式在胜负层面就失去意义了（它仍然提供数据与乐趣）。
+        if marginBonus > 22 then marginBonus = 22 end
+
+        -- 结果扰动：推演的比分方差偏小（逐节 rand(-3,3) 会互相抵消），
+        -- 导致胜负近乎由实力差决定、胜率曲线是阶跃的（实测加成 13 → 7%，
+        -- 16 → 58%）。加一段扰动既让跳过有「爆冷」的真实感（强队也会翻车），
+        -- 也让胜率随能力平滑变化，便于调参。
+        local noise = math.random(-14, 14)
+
+        local total = s.myTotal + s.oppTotal
+        local newMargin = (s.myTotal - s.oppTotal) + marginBonus + noise
+        local newMy = math.floor((total + newMargin) / 2 + 0.5)
+        if newMy < 0 then newMy = 0 end
+        if newMy > total then newMy = total end
+        local newOpp = total - newMy
+
+        -- 把新的总分按原比例摊回各节：保留逐节起伏的形状，只改总量
+        local scaleMy = (s.myTotal > 0) and (newMy / s.myTotal) or 0
+        local scaleOpp = (s.oppTotal > 0) and (newOpp / s.oppTotal) or 0
+        for q = 1, #s.myQuarters do
+            s.myQuarters[q] = math.floor((s.myQuarters[q] or 0) * scaleMy + 0.5)
+            s.oppQuarters[q] = math.floor((s.oppQuarters[q] or 0) * scaleOpp + 0.5)
+        end
+        s.myTotal = newMy
+        s.oppTotal = newOpp
+        if s.myPoints > newMy then s.myPoints = newMy end
+
+        print(string.format("[MatchText] 跳过加成：净胜分 +%.1f（综合 %.1f）| 比分 %d : %d",
+            marginBonus, overall, newMy, newOpp))
+    end
+
+    -- 硬上限保护：timeline 长度有限，正常几秒内结束。留一个上限，
+    -- 避免任何异常状态下死循环把游戏卡死。
+    local guard = 0
+    while true do
+        guard = guard + 1
+        if guard > 1000 then
+            print("[MatchText] 跳过比赛超出上限，强制结算")
+            break
+        end
+        local entry = MatchText.next()
+        if not entry then break end
+        if entry.kind == "decision" then
+            MatchText.autoDecide()
+        end
+    end
+
+    local result = MatchText.finish(state)
+    print(string.format("[MatchText] 跳过比赛完成 %s | 我 %d : %d 敌 | 个人 %d 分",
+        tostring(result.opponent), result.teamPoints or 0, result.oppPoints or 0, result.myPoints or 0))
+    return result
+end
+
 return MatchText
